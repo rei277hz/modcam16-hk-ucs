@@ -1,0 +1,8 @@
+node_modules/
+dist/
+src/wasm/pkg/
+src/wasm/color_core/target/
+*.log
+.DS_Store
+__pycache__/
+*.pyc
