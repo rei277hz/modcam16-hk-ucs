@@ -1,219 +1,179 @@
 # modCAM16-HK Cartesian Color Picker — Working Checklist
 
-This is a live implementation and verification checklist. Check items only
-after verifying them, record material findings under the relevant section, and
-update `FINAL_BEHAVIOR.md` if a finding changes the intended contract.
+Live implementation and verification record. Update this document and
+FINAL_BEHAVIOR.md together when findings change the contract. Older completed
+five-profile work is superseded by the fixed HDR-P3 browser pipeline below;
+legacy Rust APIs remain covered as regression code only.
 
-## 1. Project foundation
+## Scope and workspace
 
-- [x] Create the feature branch after these two working documents exist.
-- [x] Add a self-contained Vite + TypeScript project.
-- [x] Add a local Rust `cdylib`/`rlib` WASM color-core crate.
-- [x] Add `wasm-pack` build integration and relative production asset paths.
-- [x] Transcribe the picker-relevant ACES fixed functions and tables from the
-      official ACES 2.0 OCIO-generated processor shader.
-- [x] Confirm no source or build step depends on an absolute sibling-workspace
-      path.
-- [x] Add README setup, build, test, and behavior documentation.
-- [x] Add an appropriate `.gitignore` for Node, Vite, Rust, and wasm-pack
-      artifacts.
+- [x] Update both working documents before further implementation inspection.
+- [x] Continue on feature/cartesian-jhk-picker, preserving the prior uncommitted
+      wheel, acceleration, snapping, and responsive-layout work.
+- [x] Use Node 26 from fnm; no unrelated commit, push, or sibling shader edits.
+- [x] Keep build/runtime self-contained; no sibling repository dependency.
+- [x] Remove contradictory old profile-switch, direct-mode, and CSS-preview
+      contracts from the living documents.
 
-## 2. Numerical core
+## Canonical numerical pipeline
 
-- [x] Implement profile classification using stable IDs `0..4`.
-- [x] Implement distinct SDR and HDR appearance-model configurations matching
-      the Painter shader.
-- [x] Implement the exact normalized J anchors and scaling constants.
-- [x] Implement normalized X/Y decode and encode around `0.5`.
-- [x] Verify fixed X/Y preserves hue and revised-HK saturation while J varies.
-- [x] Reject non-finite values and X/Y points outside the unit disk.
-- [x] Implement direct JHK-to-target-XYZ evaluation.
-- [x] Implement exact ACES 2.0 inverse/forward transforms for profiles
-      `0`, `1`, `2`, and `4`.
-- [x] Implement direct linear Rec.709 for profile `3`.
-- [x] Implement cone validity with no positive upper bound:
-  - [x] Rec.709-D65
-  - [x] P3-D65
-  - [x] Rec.2020 with P3-D65 limiting
-- [x] Verify negative target channels are invalid before display clipping.
-- [x] Return actual, unclipped linear Rec.709/ACEScg values in evaluator data.
-- [x] Return separately clipped/encoded display and hex values.
-- [x] Return finite boundary coordinates for unrepresentable conversions.
+- [x] Implement dedicated picker_* WASM exports in src/wasm/color_core/src/picker.rs.
+- [x] Decode J'/x'/y' to fixed linear P3-D65; scale by 2.03 once; inverse HDR P3.
+- [x] Selected view changes presentation only, with real Rec.2020 output matrix.
+- [x] Keep the 203-nit appearance context and independently derive the physical
+      1000-nit J_HK endpoint 217.2768649129496.
+- [x] Verify the fixed 100-nit tick J'=0.34990637148068954, distinct from 203-nit
+      reference J'=0.4602422813863053.
+- [x] Keep x/y orientation (-R sin h, R cos h) and source-fixed ColorChecker.
+- [x] Mark negative/over-peak foreground RGB unavailable before inverse clipping.
+- [x] Route Background through the same fixed inverse and selected forward view.
+- [x] Expose normalized Background J' position in the 0..1 UI.
+- [x] Derive the surround from the fixed source path without a separate
+      above-peak Background state.
+- [x] Verify matching neutral foreground/surround PNG samples in all views.
+- [x] Make encoded AP1 imports solve fixed-source coordinates, without hidden
+      canonical-lock state that can disagree with displayed values.
 
-### Findings
+## Preview and worker lifecycle
 
-- The normalized cone needs its own validity helper: the legacy polar picker
-  deliberately limits direct Rec.709 to the encoded unit cube, while this
-  picker must accept positive linear target channels above `1.0`.
-- PyOpenColorIO 2.5.2 with the checked-in ACES 2.0 config is the independent
-  ACES oracle. The Rust/WASM path is tested against it; it is not used as an
-  oracle for itself. Matching the OCIO group requires leaving negative AP0
-  matrix components unclamped before ACES_OutputTransform20 and clamping the
-  target RGB range only immediately before the final XYZ matrix.
+- [x] Build the gamut viewport as checkerboard canvas + RGBA slice PNG +
+      transparent overlay canvas with identical CSS bounds.
+- [x] Render only selected-view slice pixels with WebGPU, retaining the WASM
+      fallback and removing checkerboard/indicator work from the worker.
+- [x] Encode valid gamut pixels as opaque and invalid pixels as transparent,
+      retaining selected-view SDR/HDR transfer, bit depth, ICC, and cICP.
+- [x] Paint checkerboard and every ColorChecker/neutral/marker indicator in the
+      two main-thread canvases, whose backing stores remain 512x512 even when
+      the middle WASM slice PNG is temporarily 64x64.
+- [x] Make X/Y and snap changes canvas-only; key slice work by view, J', and size.
+- [x] Keep WebGPU at 512x512 during J' interaction; permit 64x64 only after the
+      renderer is confirmed to be the CPU/WASM fallback.
+- [x] Preserve stale-image rejection and previous-image retention for slice PNGs.
+- [x] Serialize live J' slice frames so rapid desktop/mobile dragging updates
+      progressively instead of cancelling every in-flight frame.
+- [x] Let coalesced preview frames advance during rapid mobile X/Y movement and
+      finish on the exact settled control state.
+- [x] Show exactly one bold unavailable cross on black: hide stale colored PNGs
+      while pending, then suppress the immediate diagnostic once its PNG lands.
+- [x] Verify layer alignment, RGBA metadata/alpha, canvas content, WebGPU parity,
+      and view/J-only image replacement.
 
-## 3. WASM interfaces and workers
+- [x] Encode 256x256 RGB PNGs with a centered 186x186 swatch.
+- [x] SDR: 8-bit sRGB transfer, actual sRGB/Display P3 ICC, matching cICP.
+- [x] HDR: 16-bit big-endian actual PQ, P3/Rec.2020 cICP, no SDR ICC.
+- [x] Use DEFLATE level 1 and cache the generated matrix/shaper ICC profiles.
+- [x] Give evaluation/encoding its own worker, independent of slice raster work.
+- [x] Publish numerical validity before decoding; red cross during active input.
+- [x] Decode off-DOM and replace atomically after a complete generation/state check.
+- [x] Revoke stale/superseded blob URLs; preserve the last image on failures.
+- [x] Exercise delayed, out-of-order, and failed decoding in browser tests.
+- [x] Regenerate the transformed slice on view-only changes while preserving
+      source coordinates, snap state, canonical ACEScg, and canvas alignment.
 
-- [x] Define flat-array or typed-record contracts for:
-  - [x] single-color evaluation
-  - [x] rectangular X/Y slice row rendering
-  - [x] profile conversion
-  - [x] hex Set conversion
-  - [x] ColorChecker records
-  - [x] background conversion and foreground-neutral marker
-- [x] Document every returned array offset if flat arrays are retained.
-- [x] Keep Temp/Tint and adapted-coordinate controls out of the browser API.
-- [x] Render 512 x 512 settled slices.
-- [x] Render 64 x 64 preview slices during J interaction.
-- [x] Partition settled and preview rows safely across workers.
-- [x] Transfer raster buffers instead of copying them.
-- [x] Coalesce evaluator and ColorChecker work.
-- [x] Cancel or reject obsolete render generations.
-- [x] Validate full state keys before publishing asynchronous results.
-- [x] Preserve the last accepted preview/raster on worker failure.
+## UI and interaction checks
 
-### Findings
+- [x] Replace the accelerating/resetting J' roller with a flat persistent wheel
+      whose texture moves 1:1 with vertical pointer travel and whose real J'
+      changes at the retained 0.25-per-wheel-height sensitivity.
+- [x] Add the separate right-hand 0.0..1.0 ruler with displayed-J' triangle,
+      reference-white locator, and active ColorChecker locator; reduce J snap to
+      0.005 while preserving real J' for natural escape.
+- [x] Add a synchronized three-decimal J' numeric input below the wheel/ruler and
+      make the complete J' companion exactly match the gamut viewport height.
+- [x] Reinterpret Background as neutral authoring J' in 0..1, remove its shaped
+      mapping/peak state, and retain its foreground snap behavior.
+- [x] Match the preview square to the full adjacent readout-stack height and keep
+      the ColorChecker-name row invisibly reserved when inactive.
+- [x] Add gesture-speed independence, persistent wheel, snap escape, ruler,
+      numeric-input, background-J', preview-sizing, and DPR-3 layout regressions.
 
-- The standalone normalized worker contains no Temp/Tint or white-balance
-  state. The Rust crate still retains legacy polar/adaptation exports and
-  tests for numerical regression coverage; they are not imported by the
-  browser worker.
-- The official OCIO parity test runs after the WASM build and uses
-  `tests/ocio_oracle.py` plus the checked-in config under `tests/reference/`.
+- [x] Restore the shared 45 ms, 1x..4x total-speed acceleration profile for J'
+      value movement while keeping texture travel raw and 1:1.
+- [x] Add desktop click-follow-confirm wheel tracking with a consumed anywhere
+      confirmation click; keep touch/pen as pointer-captured dragging.
+- [x] Keep the texture moving at clamped endpoints, retain no value overscroll,
+      and make the first reversed delta move J' inward.
+- [x] Leave the free wheel texture unchanged by keyboard, numeric, and hex edits.
+- [x] Replace direct-speed browser regressions with acceleration, raw-texture,
+      desktop/mobile interaction, endpoint, snapping, and cancellation checks.
 
-## 4. Profile-state behavior
+- [x] Remove rolling-pad/rolling-ball markup, styles, state, labels, Pointer Lock,
+      and X/Y keyboard handling without changing the numerical picker pipeline.
+- [x] Build one wheel-plus-slice stage with J' immediately left of the flexible
+      gamut viewport on desktop and mobile.
+- [x] Preserve mouse click-place/follow/second-click-confirm behavior by pointer
+      type, independent of viewport width.
+- [x] Add relative touch/pen swiping directly on the slice using the former pad's
+      sensitivity, velocity smoothing, acceleration, clamping, and snapping.
+- [x] Move exact real/displayed/snap diagnostic state from the removed pad to the
+      plot frame and update browser helpers accordingly.
+- [x] Disable horizontal and vertical document scrolling at all sizes and retain
+      a complete, non-overlapping 360x645 DPR-3 layout.
+- [x] Replace Pointer Lock/pad browser coverage with mouse, touch, pen, rapid
+      swipe, snapping, wheel-left geometry, and no-scroll regressions.
 
-- [x] Preserve actual linear ACEScg across every ACES-to-ACES switch.
-- [x] Re-solve normalized J/X/Y after applying the target forward view.
-- [x] Implement ACES-to-direct conversion through the SDR Rec.709 view.
-- [x] Implement direct-to-ACES conversion through its inverse.
-- [x] Do not use clipped hex/display values as the retained conversion state.
-- [x] Preserve finite unavailable coordinates without snapping them to a
-      ColorChecker reference.
-- [x] Preserve Background's JHK offset through profile switches.
-- [x] Keep profile IDs independent of menu positions.
+- [x] Remove the Mode row and ID 3 from the browser workflow.
+- [x] Put four enabled menu choices on the preview button, order 1/4/2/0.
+- [x] Add active-choice indication, keyboard menu navigation, focus restoration,
+      Escape/Tab/outside dismissal, and mobile-safe positioning.
+- [x] Preserve separate real/displayed J'/X'/Y', nearest-target and neutral snapping.
+- [x] Preserve fast/slow relative-motion acceleration on direct slice
+      swipes; Pointer Lock is intentionally removed.
+- [x] Remove the rolling-pad x'/y' readout; exact diagnostics live on the slice
+      frame's accessible label and data attributes.
+- [x] Preserve mouse click-to-follow and second-click commit at every viewport width.
+- [x] Test no page scroll/overlap and visible controls at 360x645 CSS pixels, DPR 3.
+- [x] Finish the complete snap-retention/neutral-surround browser regression.
+- [x] Visually inspect desktop/mobile production output and menu.
 
-### Findings
+## Independent validation
 
-- Allowing values above `1.0` requires retaining linear values,
-  unlike the reference frontend's encoded/clamped retained state.
+- [x] Keep PyOpenColorIO 2.5.2 + the official checked-in ACES 2.0 config as oracle.
+- [x] Add independent NumPy appearance/RGB equations; compare composed source
+      inverse and all four forward views, not just the isolated transforms.
+- [x] Verify both positive HDR values and black/100/203/1000-nit neutrals.
+- [x] Decode PNG chunks with node:zlib and independently validate CRCs, sample
+      bit depth, RGB channel type, cICP bytes, ICC contents, swatch geometry,
+      actual foreground/background samples, and invalid-color diagnostic.
+- [x] Load both SDR ICCs with Pillow/LittleCMS; verify colorimetry against
+      independent matrices.
+- [x] Preserve 72 passing native Rust regressions, 18 picker math checks, the
+      original OCIO parity check, and 8 PNG/composed-pipeline checks.
+- [x] Run the full final npm test, TypeScript check, production build, diff check.
+- [x] Verify production resources and browser operation at 10.42.0.144:4173.
+- [x] Record final validation results and README details.
 
-## 5. User interface
+### Final validation
 
-- [x] Recreate the reference picker's restrained dark responsive layout.
-- [x] Add the five profiles in visible order `3`, `1`, `4`, `2`, `0`.
-- [x] Add raw `0..1` J, X, and Y range controls and numeric inputs.
-- [x] Remove Refl/Hue/Sat polar controls.
-- [x] Do not add Temp/Tint or Reset/Store/Recall.
-- [x] Retain picked-color preview and unavailable cross treatment.
-- [x] Retain actual linear readout; allow values above `1.0`.
-- [x] Retain profile-specific encoded hex Copy and Set actions.
-- [x] Retain Background surround and foreground-neutral snap marker.
-- [x] Add accessible names, input validity, keyboard behavior, and focus styles.
-- [x] Verify desktop, narrow portrait, and short-screen layouts.
+- `npm test`: 72 Rust tests, the independent OCIO parity test, 18 picker math
+  tests, 8 composed PNG/ICC/PQ tests, and 8 browser tests pass.
+- `npx tsc --noEmit`, `npm run build`, and `git diff --check` pass.
+- Production LAN verification at `10.42.0.144:4173` passes for desktop and
+  360x645 DPR-3 mobile. The PNG view menu produced 8-bit RGB for views 1/4
+  and 16-bit RGB for views 2/0. The mobile page remains exactly 645 CSS px
+  tall, and the rolling-pad UI is absent.
 
-### Findings
+### Findings and tolerances
 
-- Initial state: the viewport is display-only; selection is through controls.
-
-## 6. Cartesian viewport and indicators
-
-- [x] Map X left-to-right across `0..1`.
-- [x] Map Y bottom-to-top across `0..1`.
-- [x] Render the full square, including invalid unit-disk corners.
-- [x] Intersect the unit-disk and target-gamut-cone masks.
-- [x] Make invalid regions visibly distinct from valid black.
-- [x] Draw a neutral reference at `(0.5, 0.5)`.
-- [x] Draw the selected-color marker at exact X/Y coordinates.
-- [x] Keep indicators on a separate transparent 512 x 512 canvas.
-- [x] Publish raster and matching indicators without stale-frame flashes.
-- [x] Use Display P3 tagging where supported and explicit sRGB fallback
-      otherwise.
-
-## 7. ColorChecker behavior
-
-- [x] Use the official 18 post-2014 Lab/D50 patch measurements.
-- [x] Adapt reference measurements to D65 and retain absolute ACEScg anchors.
-- [x] Derive exact normalized J/X/Y coordinates per selected workflow.
-- [x] Draw every patch at exact X/Y, even when diagnostically unavailable.
-- [x] Choose the nearest candidate inside Euclidean distance `0.060`.
-- [x] Latch the candidate until distance exceeds `0.075`.
-- [x] Draw one dim `0.060` halo around the active patch only.
-- [x] Show the active patch name.
-- [x] Show exact locator ticks on J, X, and Y while a candidate is active.
-- [x] Snap only the coordinate being edited within absolute distance `0.015`.
-- [x] Do not change the other two coordinates during a snap.
-- [x] Apply identical rules to range and numeric inputs.
-- [x] Do not draw the narrow `0.015` snap band in the viewport.
-- [x] Do not snap invalid profile-conversion or hex-entry results.
-
-## 8. Automated tests
-
-- [x] Rust: SDR/HDR J anchor tests.
-- [x] Rust: normalized X/Y round-trip and fixed-saturation tests.
-- [x] Rust: unit-disk boundary tests.
-- [x] Rust: cone accepts above-one positive channels.
-- [x] Rust: cone rejects each negative-channel case.
-- [x] Rust: Rec.2020 P3-limited cases.
-- [x] Rust: ACEScg invariance across ACES profile switches.
-- [x] PyOpenColorIO oracle: forward/inverse ACES 2.0 parity for profiles
-      `0`, `1`, `2`, and `4`.
-- [x] Rust: direct Rec.709 bridge round trips.
-- [x] Rust: finite unavailable-coordinate fallbacks.
-- [x] Rust: Background J-offset preservation.
-- [x] Rust: ColorChecker record structure and coordinate bounds.
-- [x] TypeScript: X/Y viewport mapping and upward Y orientation.
-- [x] TypeScript: `0.060` entry, `0.075` release hysteresis.
-- [x] TypeScript: `0.015` one-axis-only snapping.
-- [x] TypeScript: profile ID/order stability.
-- [x] TypeScript: stale worker-response rejection.
-- [x] TypeScript: unclipped linear readout and clipped preview/hex separation.
-
-## 9. Manual acceptance checks
-
-- [x] Install dependencies from a clean checkout.
-- [x] Build Rust tests and WASM successfully.
-- [x] Build the Vite production bundle successfully.
-- [x] Open the production build without console errors.
-- [x] Verify all five profiles and exact menu labels.
-- [x] Verify J drag preview and settled-resolution promotion.
-- [x] Verify X/Y do not unnecessarily rerender the slice.
-- [x] Verify unit-disk corners and negative-cone regions are unavailable.
-- [x] Find and verify a valid target-gamut value above `1.0`.
-- [x] Verify actual linear readout, clipped preview, and clipped hex agree with
-      their documented roles.
-- [x] Verify ACEScg is unchanged across all ACES profile switches.
-- [x] Verify direct Rec.709 bridge behavior in both directions.
-- [x] Verify Background foreground snap before and after profile switches.
-- [x] Verify ColorChecker halo, hysteresis, locator, and independent snapping.
-- [x] Verify keyboard and numeric-input flows.
-- [x] Capture and inspect desktop and mobile screenshots.
-- [x] Re-read `FINAL_BEHAVIOR.md` against the finished implementation and
-      update either code or contract for every mismatch.
-
-## 10. Final hygiene
-
-- [x] Run formatting checks without leaving unintended rewrites.
-- [x] Run the complete automated test suite.
-- [x] Verify the official PyOpenColorIO oracle is included in `npm test`.
-- [x] Review `git diff` for copied-but-unused reference functionality.
-- [x] Confirm no Temp/Tint, Reset/Store/Recall, or polar Refl/Hue/Sat remnants
-      in the browser UI or normalized worker contract.
-- [x] Confirm no generated build artifacts are tracked unintentionally.
-- [x] Update all checklist findings and mark only verified items complete.
-
-### Final findings
-
-- The normalized cone required a separate helper because the legacy direct
-  Rec.709 path intentionally enforces an encoded unit cube.
-- Range controls use `step="any"` so a ColorChecker locator can snap to its
-  exact normalized coordinate; numeric inputs use the same independent-axis
-  snap path.
-- A same-frame X/Y settlement followed by J input must let the newer J event
-  win the preview-resolution request. The scheduler now coalesces that case
-  explicitly.
-- The mobile preview readout wraps within its grid track instead of allowing
-  the tuple to widen the action row beyond the viewport.
-- The OCIO oracle exposed a saturated-primary discrepancy caused by applying
-  range clamps at the wrong points in the ACEScg→ACES2065-1→output group. The
-  implementation now follows the official processor composition and passes
-  all checked forward/inverse vectors within `3e-5`.
+- The old J_HK endpoint 183.7488220212894 is not physical 1000-nit white with the
+  retained appearance model/scaling. The browser now has a distinct canonical
+  endpoint; legacy tests intentionally continue testing their historical API.
+- Selected ACES forward XYZ uses Y=1 at 100 nits. PNG PQ encoding therefore
+  multiplies view RGB by 100, not by 203 or another 2.03.
+- Background J' is normalized directly from 0 to 1; its neutral source reaches
+  the fixed 1000-nit endpoint at 1.0.
+- A scrollable `overflow: hidden` grid can change `scrollLeft` when a fixed
+  descendant menu restores focus. The visuals grid uses non-scrollable clipping,
+  and the reserved 110-pixel preview/readout row prevents first/second-click
+  coordinate drift when a ColorChecker name changes visibility.
+- At exactly 1000-nit neutral, OCIO float32 inverse shoulder/matrix rounding
+  gives ACEScg about 512.0153 versus WASM about 511.9975. The endpoint has a
+  1e-4 relative scene tolerance; other composed samples use 3e-5 relative
+  (with a unit absolute floor). Forward RGB tolerance is 8e-5, and all encoded
+  image samples agree within one 8-/16-bit quantization step.
+- Browser tests inspect PNG data/metadata and browser decoding, not physical HDR
+  luminance. Actual HDR/wide-gamut appearance still requires manual testing on
+  the target browser/OS/display. All views intentionally stay selectable.
+- A software WebGPU adapter rendered all four view profiles with no validity
+  mismatches against the f64 WASM fallback on a 17x17 slice. Maximum linear-RGB
+  difference was 0.00034 for SDR and 0.00164 for HDR (expected f32 variation).

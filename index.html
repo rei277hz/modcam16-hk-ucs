@@ -13,37 +13,89 @@
   <body>
     <main class="app-shell">
       <section class="visuals">
-        <div class="plot-frame" aria-busy="true">
-          <canvas
-            id="gamut-slice"
-            width="512"
-            height="512"
-            aria-label="Saturation X and Saturation Y gamut slice"
-          ></canvas>
-          <canvas
-            id="gamut-indicators"
-            width="512"
-            height="512"
-            aria-hidden="true"
-          ></canvas>
-          <span id="plot-status" class="plot-status" role="status"
-            >Loading color engine…</span
+        <div class="gamut-stage">
+          <div class="j-wheel-control">
+            <label class="control-label" id="j-label" for="j-number">J'</label>
+            <div class="j-wheel-body">
+              <div
+                class="j-wheel"
+                id="j-wheel"
+                role="slider"
+                tabindex="0"
+                aria-labelledby="j-label"
+                aria-orientation="vertical"
+                aria-valuemin="0"
+                aria-valuemax="1"
+                aria-valuenow="0.3"
+                aria-valuetext="0.300"
+                ><span class="j-wheel-roller" aria-hidden="true"></span></div>
+              <div class="j-ruler" aria-hidden="true">
+                <div class="j-wheel-ticks">
+                  <span style="--tick: 0">0.0</span>
+                  <span style="--tick: 0.1">0.1</span>
+                  <span style="--tick: 0.2">0.2</span>
+                  <span style="--tick: 0.3">0.3</span>
+                  <span style="--tick: 0.4">0.4</span>
+                  <span style="--tick: 0.5">0.5</span>
+                  <span style="--tick: 0.6">0.6</span>
+                  <span style="--tick: 0.7">0.7</span>
+                  <span style="--tick: 0.8">0.8</span>
+                  <span style="--tick: 0.9">0.9</span>
+                  <span style="--tick: 1">1.0</span>
+                </div>
+                <span id="j-reference-tick" class="j-reference-tick"></span>
+                <span id="j-stick" class="j-patch-tick" hidden></span>
+                <span id="j-current-indicator" class="j-current-indicator"></span>
+              </div>
+            </div>
+            <input id="j-number" class="number-input j-number" type="number"
+              min="0" max="1" step="0.001" value="0.300"
+              inputmode="decimal" aria-label="J prime value" />
+          </div>
+          <div
+            class="plot-frame"
+            id="plot-frame"
+            aria-busy="true"
+            aria-label="Gamut slice"
           >
+            <canvas
+              id="gamut-checkerboard"
+              width="512" height="512" aria-hidden="true"
+            ></canvas>
+            <img
+              id="gamut-slice"
+              width="512" height="512" alt="J', x', and y' gamut slice"
+            />
+            <canvas
+              id="gamut-indicators"
+              width="512" height="512" aria-hidden="true"
+            ></canvas>
+            <span id="plot-status" class="plot-status" role="status"
+              >Loading color engine…</span
+            >
+          </div>
         </div>
         <div class="preview-panel">
           <div class="preview-column">
-            <div id="preview-surround" class="preview-surround">
-              <div
-                id="preview"
-                class="preview"
-                aria-label="Chosen color preview"
-              ></div>
+            <button id="preview" class="preview" type="button"
+              aria-label="Choose preview view transform" aria-haspopup="menu"
+              aria-expanded="false" aria-controls="view-menu"
+              title="ACES 2.0 - SDR 100 nits (Rec.709) — click to change view">
+              <img id="preview-image" width="256" height="256" alt="Picked color and background surround" hidden />
+              <span class="view-menu-cue" aria-hidden="true">▾</span>
+            </button>
+            <div id="view-menu" class="view-menu" role="menu" aria-label="Preview view transform" hidden>
+              <button type="button" role="menuitemradio" aria-checked="true" data-view="1">ACES 2.0 - SDR 100 nits (Rec.709)</button>
+              <button type="button" role="menuitemradio" aria-checked="false" data-view="4">ACES 2.0 - SDR 100 nits (P3 D65)</button>
+              <button type="button" role="menuitemradio" aria-checked="false" data-view="2">ACES 2.0 - HDR 1000 nits (P3 D65)</button>
+              <button type="button" role="menuitemradio" aria-checked="false" data-view="0">ACES 2.0 - HDR 1000 nits (Rec.2020)</button>
             </div>
+            <span id="preview-status" class="preview-status" role="status" hidden></span>
           </div>
           <div class="preview-details">
-            <span id="rgb-label">Linear Rec.709 (sRGB)<sup>*</sup></span>
+            <span id="rgb-label">ACEScg<sup>*</sup></span>
             <code id="linear-value">(0.000, 0.000, 0.000)</code>
-            <span id="encoded-label">sRGB Encoded Rec.709 (sRGB)</span>
+            <span id="encoded-label">sRGB Encoded AP1</span>
             <div class="encoded-value-row">
               <div class="hex-input">
                 <span class="hex-prefix" aria-hidden="true">#</span>
@@ -55,7 +107,7 @@
                   maxlength="6"
                   pattern="[0-9A-Fa-f]{6}"
                   spellcheck="false"
-                  aria-label="Six sRGB Encoded Rec.709 hexadecimal digits"
+                  aria-label="Six sRGB Encoded ACEScg AP1 hexadecimal digits"
                 />
               </div>
               <button id="copy-value" class="action-button" type="button">
@@ -68,12 +120,12 @@
             <span
               id="colorchecker-name"
               class="colorchecker-name"
-              hidden
+              aria-hidden="true"
             ></span>
           </div>
           <div class="background-control">
             <label for="background-brightness"
-              >Background
+              >Background J'
               <span class="control-value" id="background-brightness-value"
                 >0.150</span
               ></label
@@ -90,134 +142,16 @@
                 type="range"
                 min="0"
                 max="1"
-                step="0.001"
-                value="0.3893"
-                aria-label="Linear background brightness"
-              />
-            </div>
-          </div>
-        </div>
-      </section>
-      <section class="controls" aria-label="Color controls">
-        <div class="control-row profile-row">
-          <label for="profile">Mode</label>
-          <select id="profile" aria-label="Source gamut and transform">
-            <option value="3" selected>Rec.709 / No view transform</option>
-            <option value="1">
-              Rec.709 / ACES 2.0 - SDR 100 nits (Rec.709)
-            </option>
-            <option value="4">P3-D65 / ACES 2.0 - SDR 100 nits (P3 D65)</option>
-            <option value="2">
-              P3-D65 / ACES 2.0 - HDR 1000 nits (P3 D65)
-            </option>
-            <option value="0">
-              Rec.2020 (P3-D65 limited) / ACES 2.0 - HDR 1000 nits (Rec.2020)
-            </option>
-          </select>
-        </div>
-        <div class="control-row">
-          <label for="j-code">J<sub>HK</sub></label>
-          <div class="slider-control">
-            <div class="range-wrap">
-              <span
-                id="j-stick"
-                class="stick-marker patch-stick"
-                hidden
-                aria-hidden="true"
-              ></span>
-              <input
-                id="j-code"
-                type="range"
-                min="0"
-                max="1"
                 step="any"
-                value="0.3"
-                aria-label="Normalized J HK"
+                value="0.15"
+                aria-label="Background J prime, 0 to 1"
               />
             </div>
-            <input
-              id="j-number"
-              class="number-input"
-              type="number"
-              min="0"
-              max="1"
-              step="any"
-              value="0.3"
-              inputmode="decimal"
-              aria-label="Normalized J HK value"
-            />
-          </div>
-        </div>
-        <div class="control-row">
-          <label for="saturation-x">Saturation X</label>
-          <div class="slider-control">
-            <div class="range-wrap">
-              <span
-                id="x-stick"
-                class="stick-marker patch-stick"
-                hidden
-                aria-hidden="true"
-              ></span>
-              <input
-                id="saturation-x"
-                type="range"
-                min="0"
-                max="1"
-                step="any"
-                value="0.6"
-                aria-label="Normalized saturation X"
-              />
-            </div>
-            <input
-              id="x-number"
-              class="number-input"
-              type="number"
-              min="0"
-              max="1"
-              step="any"
-              value="0.6"
-              inputmode="decimal"
-              aria-label="Normalized saturation X value"
-            />
-          </div>
-        </div>
-        <div class="control-row">
-          <label for="saturation-y">Saturation Y</label>
-          <div class="slider-control">
-            <div class="range-wrap">
-              <span
-                id="y-stick"
-                class="stick-marker patch-stick"
-                hidden
-                aria-hidden="true"
-              ></span>
-              <input
-                id="saturation-y"
-                type="range"
-                min="0"
-                max="1"
-                step="any"
-                value="0.58"
-                aria-label="Normalized saturation Y"
-              />
-            </div>
-            <input
-              id="y-number"
-              class="number-input"
-              type="number"
-              min="0"
-              max="1"
-              step="any"
-              value="0.58"
-              inputmode="decimal"
-              aria-label="Normalized saturation Y value"
-            />
           </div>
         </div>
       </section>
       <footer class="app-footer">
-        * The raw J<sub>HK</sub>, Saturation X, and Saturation Y channels select
-        this value.
+        * Fixed HDR P3 authoring. Click the preview to change its view.
       </footer>
     </main>
     <script type="module" src="/src/main.ts"></script>

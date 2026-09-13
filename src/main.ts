@@ -1,18 +1,26 @@
 import "./style.css";
+import { VIEW_IDS, VIEW_NAMES, type ViewId } from "./preview_png";
 import {
+  J_REFERENCE_WHITE,
   PATCH_ENTRY_RADIUS,
-  backgroundFromSlider as decodeBackgroundSlider,
-  backgroundSliderPosition,
+  ROLLING_BALL_SENSITIVITY,
+  backgroundFromSlider,
   canvasPoint,
   clamp01,
-  patchCandidate,
-  snapCoordinate,
+  nearestJSnapTarget,
+  nearestSnapTarget,
+  rollingBallAcceleration,
+  rollingBallDelta,
+  rollingBallVelocity,
+  rollingWheelDelta,
+  projectSnapCode,
+  slicePoint,
 } from "./picker_math";
 
 const FULL = 512;
 const PREVIEW = 64;
-const WORKERS = Math.max(1, Math.min(12, navigator.hardwareConcurrency || 2));
-const PROFILES = [0, 1, 2, 3, 4] as const;
+const SOURCE_PROFILE = 2;
+const INITIAL_J = 0.3;
 const PATCH_NAMES = [
   "Dark Skin",
   "Light Skin",
@@ -44,24 +52,31 @@ type Patch = {
   srgb: [number, number, number];
   available: boolean;
 };
+type SnapTarget =
+  | { kind: "neutral"; x: number; y: number }
+  | { kind: "patch"; index: number; x: number; y: number; j: number };
 type RenderResponse = {
-  kind: "render";
+  kind: "slice";
   id: number;
   profile: number;
   width: number;
   height: number;
-  yStart: number;
-  pixels: Uint8Array;
+  j: number;
+  renderer: "webgpu" | "wasm";
+  png: Uint8Array<ArrayBuffer>;
 };
 type EvaluateResponse = {
   kind: "evaluate";
   id: number;
   profile: number;
   j: number;
-  saturationX: number;
-  saturationY: number;
-  background: number;
+  fittedRadiusX: number;
+  fittedRadiusY: number;
+  backgroundJ: number;
   values: Float64Array;
+};
+type PreviewResponse = Omit<EvaluateResponse, "kind" | "values"> & {
+  kind: "preview"; valid: boolean; png: Uint8Array<ArrayBuffer>;
 };
 type ColorCheckerResponse = {
   kind: "colorchecker";
@@ -74,8 +89,6 @@ type SetResponse = {
   id: number;
   profile: number;
   values: Float64Array;
-  background?: number;
-  backgroundPreserved?: boolean;
 };
 type WorkerError = {
   kind: "worker-error";
@@ -86,54 +99,53 @@ type WorkerError = {
 
 const $ = <T extends Element>(selector: string) =>
   document.querySelector<T>(selector)!;
-const canvas = $("#gamut-slice") as HTMLCanvasElement;
+const checkerboard = $("#gamut-checkerboard") as HTMLCanvasElement;
+const gamutSliceImage = $("#gamut-slice") as HTMLImageElement;
 const indicators = $("#gamut-indicators") as HTMLCanvasElement;
 const plotFrame = $(".plot-frame") as HTMLElement;
 const plotStatus = $("#plot-status") as HTMLElement;
-const profileSelect = $("#profile") as HTMLSelectElement;
-const jRange = $("#j-code") as HTMLInputElement;
-const xRange = $("#saturation-x") as HTMLInputElement;
-const yRange = $("#saturation-y") as HTMLInputElement;
+const viewMenu = $("#view-menu") as HTMLElement;
+const viewButtons = Array.from(viewMenu.querySelectorAll<HTMLButtonElement>("[data-view]"));
+const previewStatus = $("#preview-status") as HTMLElement;
+const jWheel = $("#j-wheel") as HTMLElement;
+const jWheelRoller = $(".j-wheel-roller") as HTMLElement;
+const jReferenceTick = $("#j-reference-tick") as HTMLElement;
+const jCurrentIndicator = $("#j-current-indicator") as HTMLElement;
 const jNumber = $("#j-number") as HTMLInputElement;
-const xNumber = $("#x-number") as HTMLInputElement;
-const yNumber = $("#y-number") as HTMLInputElement;
 const backgroundRange = $("#background-brightness") as HTMLInputElement;
 const backgroundValue = $("#background-brightness-value") as HTMLElement;
 const backgroundStick = $("#background-stick") as HTMLElement;
-const preview = $("#preview") as HTMLElement;
-const previewSurround = $("#preview-surround") as HTMLElement;
-const linearLabel = $("#rgb-label") as HTMLElement;
+const preview = $("#preview") as HTMLButtonElement;
+let previewImage = $("#preview-image") as HTMLImageElement;
 const linearValue = $("#linear-value") as HTMLElement;
-const encodedLabel = $("#encoded-label") as HTMLElement;
 const encodedValue = $("#encoded-value") as HTMLInputElement;
 const copyValue = $("#copy-value") as HTMLButtonElement;
 const setValue = $("#set-value") as HTMLButtonElement;
 const checkerName = $("#colorchecker-name") as HTMLElement;
 const jStick = $("#j-stick") as HTMLElement;
-const xStick = $("#x-stick") as HTMLElement;
-const yStick = $("#y-stick") as HTMLElement;
 
-function displayP3Context(target: HTMLCanvasElement): CanvasRenderingContext2D {
+function canvasContext(target: HTMLCanvasElement): CanvasRenderingContext2D {
   try {
-    const candidate = target.getContext("2d", { colorSpace: "display-p3" });
-    if (candidate) return candidate;
+    const p3 = target.getContext("2d", { colorSpace: "display-p3" });
+    if (p3) return p3;
   } catch {
-    // Engines predating canvas color-space selection throw here.
+    // Fall through for browsers without canvas color-space selection.
   }
-  const fallback = target.getContext("2d");
-  if (!fallback) throw new Error("A 2D canvas context is required.");
-  return fallback;
+  const context = target.getContext("2d");
+  if (!context) throw new Error("A 2D canvas context is required.");
+  return context;
 }
 
-let context = displayP3Context(canvas);
-const indicatorContext = displayP3Context(indicators);
+const checkerboardContext = canvasContext(checkerboard);
+const indicatorContext = canvasContext(indicators);
 let displayP3Canvas = false;
 try {
-  displayP3Canvas = context.getContextAttributes().colorSpace === "display-p3";
+  displayP3Canvas = indicatorContext.getContextAttributes().colorSpace === "display-p3";
 } catch {
   displayP3Canvas = false;
 }
-let image = new ImageData(FULL, FULL);
+let sliceSize = FULL;
+
 let imageKey = "";
 let renderId = 0;
 let evaluationId = 0;
@@ -143,56 +155,66 @@ let currentRender:
   | {
       id: number;
       key: string;
+      profile: ViewId;
+      j: number;
       width: number;
       height: number;
-      pixels: Uint8ClampedArray;
-      pending: Set<number>;
     }
   | undefined;
 let currentPatches: Patch[] = [];
 let activePatch: number | null = null;
-let activeAxis: "j" | "x" | "y" | null = null;
-let retainedLinear: [number, number, number] = [0, 0, 0];
-let sliderProfile = 3;
+let activeTarget: SnapTarget | null = null;
+let activeAxis: "j" | "xy" | null = null;
+let code: Code = { j: INITIAL_J, x: 0.38, y: 0.65 };
+let realCode: Code = { ...code };
+let sliceTouchPointerId: number | null = null;
+let sliceTouchLastX = 0;
+let sliceTouchLastY = 0;
+let sliceTouchLastTime = 0;
+let sliceTouchVelocityX = 0;
+let sliceTouchVelocityY = 0;
+let jWheelPointerId: number | null = null;
+let jWheelMouseTracking = false;
+let jWheelLastX = 0;
+let jWheelLastY = 0;
+let jWheelLastTime = 0;
+let jWheelVelocityX = 0;
+let jWheelVelocityY = 0;
+let jWheelTextureOffset = 0;
+let jWheelVisualHeight = 0;
+let jWheelSuppressClick = false;
+let sliceTrackingActive = false;
+let selectedView: ViewId = 1;
+let confirmedSliceRenderer: "unknown" | "webgpu" | "wasm" = "unknown";
+let previewUrl: string | undefined;
+let sliceUrl: string | undefined;
+let pageClosed = false;
 let backgroundSnap: number | null = null;
-let canonicalLocked = false;
-let framePending = false;
-let queuedFullRender = false;
+let latestValueResponseId = 0;
+let previewDecodeActive = false;
+let queuedPreview: PreviewResponse | undefined;
 
-const workers = Array.from(
-  { length: WORKERS },
-  () =>
-    new Worker(new URL("./render_worker.ts", import.meta.url), {
-      type: "module",
-    }),
-);
-const checkerWorker = workers[workers.length - 1];
+const sliceWorker = new Worker(new URL("./render_worker.ts", import.meta.url), { type: "module" });
+const evaluatorWorker = new Worker(new URL("./render_worker.ts", import.meta.url), { type: "module" });
+const checkerWorker = evaluatorWorker;
 
 function finite(value: number, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
 }
 function currentCode(): Code {
-  return {
-    j: clamp01(Number(jRange.value)),
-    x: clamp01(Number(xRange.value)),
-    y: clamp01(Number(yRange.value)),
-  };
+  return { ...code };
 }
-function currentProfile() {
-  const p = Number(profileSelect.value);
-  return PROFILES.includes(p as (typeof PROFILES)[number]) ? p : 3;
+function currentRealCode(): Code {
+  return { ...realCode };
 }
-function profileP3(profile = currentProfile()) {
-  return profile !== 1 && profile !== 3;
+function currentProfile(): ViewId { return selectedView; }
+function requestedSliceSize() {
+  return activeAxis === "j" && confirmedSliceRenderer === "wasm"
+    ? PREVIEW
+    : FULL;
 }
-function useDisplayP3(profile = currentProfile()) {
-  return profileP3(profile) && displayP3Canvas;
-}
-function directProfile(profile = currentProfile()) {
-  return profile === 3;
-}
-function stateKey(profile: number, code = currentCode()) {
-  return `${profile}|${code.j.toFixed(8)}`;
+function stateKey(code = currentCode(), size = requestedSliceSize()) {
+  return `${selectedView}:${size}:${code.j.toFixed(12)}`;
 }
 function formatRgb(values: ArrayLike<number>) {
   return `(${Array.from(values, (value) => (Number.isFinite(value) ? value.toFixed(4) : "nan")).join(", ")})`;
@@ -215,248 +237,362 @@ function decodeHex(value: string): [number, number, number] | undefined {
     parseInt(match[1].slice(4, 6), 16) / 255,
   ];
 }
-function setColor(
-  element: HTMLElement,
-  values: ArrayLike<number>,
-  fallback = values,
-) {
-  const p3 = Array.from(values, (value) => clamp01(Number(value)));
-  const srgb = Array.from(fallback, (value) => clamp01(Number(value)));
-  element.style.backgroundColor = `rgb(${srgb.map((value) => Math.round(value * 255)).join(" ")})`;
-  if (
-    profileP3() &&
-    displayP3Canvas &&
-    CSS.supports("background-color", "color(display-p3 1 0 0)")
-  )
-    element.style.backgroundColor = `color(display-p3 ${p3.join(" ")})`;
-}
-function backgroundFromSlider() {
-  return decodeBackgroundSlider(Number(backgroundRange.value));
+function currentBackgroundJ() {
+  return backgroundFromSlider(Number(backgroundRange.value));
 }
 function updateBackground() {
-  const value = backgroundFromSlider();
-  backgroundValue.textContent = value.toFixed(3);
-  const gray = clamp01(backgroundSliderPosition(value));
-  setColor(previewSurround, [gray, gray, gray], [gray, gray, gray]);
+  backgroundValue.textContent = currentBackgroundJ().toFixed(3);
 }
-function setCode(axis: keyof Code, value: number) {
+function updateJWheelVisual() {
+  const height = jWheel.getBoundingClientRect().height || 1;
+  if (jWheelVisualHeight > 0 && Math.abs(height - jWheelVisualHeight) > 0.01)
+    jWheelTextureOffset *= height / jWheelVisualHeight;
+  jWheelVisualHeight = height;
+  // The wheel is a free physical surface. Its texture phase records raw
+  // pointer travel and is deliberately independent of accelerated/snapped J'.
+  jWheelRoller.style.backgroundPositionY = `${jWheelTextureOffset}px`;
+  jWheel.dataset.realValue = realCode.j.toFixed(6);
+  jWheel.dataset.visualOffset = jWheelTextureOffset.toFixed(3);
+}
+function updatePlotLabel() {
+  const interaction = sliceTrackingActive
+    ? " mouse tracking active;"
+    : sliceTouchPointerId !== null
+      ? " touch or pen gesture active;"
+      : ";";
+  plotFrame.setAttribute(
+    "aria-label",
+    `Gamut slice${interaction} x' ${code.x.toFixed(6)}, y' ${code.y.toFixed(6)}`,
+  );
+}
+function setDisplayedCode(next: Code) {
+  code = {
+    j: clamp01(next.j),
+    x: clamp01(next.x),
+    y: clamp01(next.y),
+  };
+  updatePlotLabel();
+  jWheel.setAttribute("aria-valuenow", code.j.toString());
+  jWheel.setAttribute("aria-valuetext", code.j.toFixed(3));
+  jWheel.dataset.value = code.j.toFixed(6);
+  if (document.activeElement !== jNumber) jNumber.value = code.j.toFixed(3);
+  jCurrentIndicator.style.bottom = `${code.j * 100}%`;
+  plotFrame.dataset.realJ = realCode.j.toFixed(6);
+  plotFrame.dataset.realX = realCode.x.toFixed(6);
+  plotFrame.dataset.realY = realCode.y.toFixed(6);
+  plotFrame.dataset.displayJ = code.j.toFixed(6);
+  plotFrame.dataset.displayX = code.x.toFixed(6);
+  plotFrame.dataset.displayY = code.y.toFixed(6);
+  updateJWheelVisual();
+  drawIndicators();
+}
+function setRealCode(axis: keyof Code, value: number) {
   const target = clamp01(value);
-  const input = axis === "j" ? jRange : axis === "x" ? xRange : yRange;
-  const number = axis === "j" ? jNumber : axis === "x" ? xNumber : yNumber;
-  input.value = target.toString();
-  if (document.activeElement !== number) number.value = target.toFixed(6);
+  realCode[axis] = target;
 }
-function syncNumbers() {
-  const code = currentCode();
-  setCode("j", code.j);
-  setCode("x", code.x);
-  setCode("y", code.y);
+function setAllCode(next: Code) {
+  realCode = {
+    j: clamp01(next.j),
+    x: clamp01(next.x),
+    y: clamp01(next.y),
+  };
+  setDisplayedCode(realCode);
+}
+function paintCheckerboard() {
+  checkerboardContext.clearRect(0, 0, checkerboard.width, checkerboard.height);
+  checkerboardContext.fillStyle = "#171a20";
+  checkerboardContext.fillRect(0, 0, checkerboard.width, checkerboard.height);
+  const tile = 16;
+  for (let y = 0; y < checkerboard.height; y += tile) {
+    for (let x = 0; x < checkerboard.width; x += tile) {
+      checkerboardContext.fillStyle = ((x / tile + y / tile) & 1) === 0 ? "#1b1f26" : "#11151b";
+      checkerboardContext.fillRect(x, y, tile, tile);
+    }
+  }
+}
+function drawCircle(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  stroke: string,
+  lineWidth: number,
+) {
+  context.strokeStyle = stroke;
+  context.lineWidth = lineWidth;
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.stroke();
 }
 function drawIndicators() {
-  if (imageKey !== stateKey(currentProfile())) return;
-  const code = currentCode();
-  indicatorContext.clearRect(0, 0, indicators.width, indicators.height);
   const scale = indicators.width;
   const point = (x: number, y: number) => canvasPoint(x, y, scale);
+  indicatorContext.clearRect(0, 0, indicators.width, indicators.height);
   indicatorContext.save();
-  indicatorContext.strokeStyle = "rgb(255 255 255 / 55%)";
-  indicatorContext.lineWidth = 2;
   const [cx, cy] = point(code.x, code.y);
-  indicatorContext.beginPath();
-  indicatorContext.arc(cx, cy, 7, 0, Math.PI * 2);
-  indicatorContext.stroke();
-  indicatorContext.strokeStyle = "rgb(255 255 255 / 22%)";
+  drawCircle(indicatorContext, cx, cy, 7, "rgb(255 255 255 / 65%)", 2);
   const [nx, ny] = point(0.5, 0.5);
+  indicatorContext.strokeStyle = "rgb(255 255 255 / 25%)";
+  indicatorContext.lineWidth = 2;
   indicatorContext.beginPath();
   indicatorContext.moveTo(nx - 8, ny);
   indicatorContext.lineTo(nx + 8, ny);
   indicatorContext.moveTo(nx, ny - 8);
   indicatorContext.lineTo(nx, ny + 8);
   indicatorContext.stroke();
-  for (const patch of currentPatches) {
+  drawCircle(indicatorContext, nx, ny, PATCH_ENTRY_RADIUS * scale, "rgb(245 193 93 / 30%)", 1.5);
+  currentPatches.forEach((patch, patchIndex) => {
     const [px, py] = point(patch.x, patch.y);
-    indicatorContext.fillStyle = useDisplayP3()
+    indicatorContext.fillStyle = displayP3Canvas
       ? `color(display-p3 ${patch.p3.join(" ")})`
       : `rgb(${patch.srgb.map((v) => Math.round(clamp01(v) * 255)).join(" ")})`;
     indicatorContext.beginPath();
     indicatorContext.arc(px, py, 3.5, 0, Math.PI * 2);
     indicatorContext.fill();
-  }
-  if (activePatch !== null && currentPatches[activePatch]) {
-    const patch = currentPatches[activePatch];
-    const [px, py] = point(patch.x, patch.y);
-    indicatorContext.strokeStyle = "rgb(190 220 255 / 38%)";
-    indicatorContext.lineWidth = 2;
-    indicatorContext.beginPath();
-    indicatorContext.arc(px, py, PATCH_ENTRY_RADIUS * scale, 0, Math.PI * 2);
-    indicatorContext.stroke();
-  }
+    const active = activeTarget?.kind === "patch" && activeTarget.index === patchIndex;
+    drawCircle(indicatorContext, px, py, PATCH_ENTRY_RADIUS * scale,
+      active ? "rgb(190 220 255 / 78%)" : "rgb(190 220 255 / 26%)", active ? 2 : 1.5);
+  });
+  if (activeTarget?.kind === "neutral")
+    drawCircle(indicatorContext, nx, ny, PATCH_ENTRY_RADIUS * scale, "rgb(245 193 93 / 78%)", 2);
   indicatorContext.restore();
+}
+function invalidatePendingSet() {
+  // A hex import must not overwrite newer pointer or Background input.
+  // Advancing the request token makes an eventual worker response obsolete.
+  setId += 1;
 }
 function updatePatchLocators() {
   const patch = activePatch === null ? undefined : currentPatches[activePatch];
-  for (const [element, value] of [
-    [jStick, patch?.j],
-    [xStick, patch?.x],
-    [yStick, patch?.y],
-  ] as const) {
-    element.hidden = value === undefined;
-    if (value !== undefined) element.style.left = `${value * 100}%`;
+  jStick.hidden = patch === undefined;
+  if (patch) {
+    jStick.style.bottom = `${patch.j * 100}%`;
   }
-  checkerName.hidden = !patch;
+  jCurrentIndicator.style.bottom = `${code.j * 100}%`;
+  checkerName.classList.toggle("is-hidden", !patch);
+  checkerName.setAttribute("aria-hidden", String(!patch));
   checkerName.textContent = patch?.name ?? "";
 }
-function updatePatchCandidate() {
-  const code = currentCode();
-  activePatch = patchCandidate(code.x, code.y, currentPatches, activePatch);
-  updatePatchLocators();
-  drawIndicators();
-}
-function snapAxis(axis: "j" | "x" | "y") {
-  updatePatchCandidate();
-  if (activePatch === null) return;
-  const patch = currentPatches[activePatch];
-  const code = currentCode();
-  const value = code[axis];
-  const target = patch[axis];
-  const snapped = snapCoordinate(value, target);
-  setCode(axis, snapped);
-  if (snapped === target && value !== target) {
-    const number = axis === "j" ? jNumber : axis === "x" ? xNumber : yNumber;
-    number.value = target.toFixed(6);
+function updatePatchCandidate(applySnap = true) {
+  const real = currentRealCode();
+  const patchPoints = currentPatches.map((patch) => ({ x: patch.x, y: patch.y }));
+  const candidate = nearestSnapTarget(real.x, real.y, patchPoints);
+  if (candidate?.kind === "neutral") {
+    activeTarget = candidate;
+    activePatch = null;
+  } else if (candidate) {
+    const patch = currentPatches[candidate.index];
+    activePatch = candidate.index;
+    activeTarget = {
+      kind: "patch",
+      index: candidate.index,
+      x: patch.x,
+      y: patch.y,
+      j: patch.j,
+    };
+  } else {
+    activePatch = null;
+    activeTarget = null;
   }
-  updatePatchCandidate();
+  plotFrame.dataset.snapTarget =
+    activeTarget?.kind === "patch"
+      ? `patch:${activeTarget.index}`
+      : activeTarget?.kind ?? "none";
+  const jTarget = nearestJSnapTarget(
+    real.j,
+    activeTarget?.kind === "patch" ? activeTarget.j : undefined,
+  );
+  plotFrame.dataset.jSnapTarget = jTarget?.kind ?? "none";
+  plotFrame.dataset.colorcheckerRingCount = String(currentPatches.length);
+  updatePatchLocators();
+  const projected =
+    applySnap
+      ? projectSnapCode(
+          real,
+          activeTarget,
+          activeTarget?.kind === "patch" ? activeTarget.j : undefined,
+          activeAxis,
+          code,
+        )
+      : real;
+  setDisplayedCode(projected);
 }
 function displayValues(values: Float64Array) {
-  const p3 = profileP3();
-  const evaluatedLinear = [values[1], values[2], values[3]] as [
-    number,
-    number,
-    number,
-  ];
-  const evaluatedFinite = evaluatedLinear.every(Number.isFinite);
-  if (!canonicalLocked && evaluatedFinite) retainedLinear = evaluatedLinear;
-  const linear =
-    canonicalLocked || !evaluatedFinite ? retainedLinear : evaluatedLinear;
-  const encoded = canonicalLocked
-    ? (linear.map((value) =>
-        value <= 0.0031308
-          ? 12.92 * value
-          : 1.055 * Math.max(0, value) ** (1 / 2.4) - 0.055,
-      ) as [number, number, number])
-    : [values[10], values[11], values[12]].every(Number.isFinite)
-      ? ([values[10], values[11], values[12]] as [number, number, number])
-      : (linear.map((value) =>
-          value <= 0.0031308
-            ? 12.92 * value
-            : 1.055 * Math.max(0, value) ** (1 / 2.4) - 0.055,
-        ) as [number, number, number]);
-  const display = (
-    p3 ? [values[4], values[5], values[6]] : [values[7], values[8], values[9]]
-  ) as [number, number, number];
-  const displaySrgb = [values[7], values[8], values[9]] as [
-    number,
-    number,
-    number,
-  ];
-  linearLabel.innerHTML = directProfile()
-    ? "Linear Rec.709 (sRGB)<sup>*</sup>"
-    : "ACEScg<sup>*</sup>";
-  encodedLabel.textContent = directProfile()
-    ? "sRGB Encoded Rec.709 (sRGB)"
-    : "sRGB Encoded AP1";
-  encodedValue.setAttribute(
-    "aria-label",
-    directProfile()
-      ? "Six sRGB Encoded Rec.709 hexadecimal digits"
-      : "Six sRGB Encoded ACEScg AP1 hexadecimal digits",
-  );
-  linearValue.textContent = formatRgb(linear);
-  if (document.activeElement !== encodedValue)
-    encodedValue.value = encodeHex(encoded);
-  preview.classList.toggle("preview-unavailable", values[0] <= 0.5);
-  if (values[0] > 0.5) setColor(preview, display, displaySrgb);
-  else preview.style.backgroundColor = "#000";
-  const bgP3 = [values[13], values[14], values[15]];
-  const bgSrgb = [values[16], values[17], values[18]];
-  backgroundValue.textContent = backgroundFromSlider().toFixed(3);
-  setColor(previewSurround, bgP3, bgSrgb);
+  const valid = values[0] > 0.5;
+  linearValue.textContent = valid ? formatRgb(values.slice(1, 4)) : "Unavailable";
+  if (valid && document.activeElement !== encodedValue)
+    encodedValue.value = encodeHex(values.slice(10, 13));
+  encodedValue.title = valid ? "sRGB-transfer encoded scene-linear AP1" : "Last valid encoded AP1; the current pick is unavailable";
+  preview.classList.toggle("preview-unavailable", !valid);
+  // While the replacement PNG is being encoded/decoded, do not leave a
+  // previous valid swatch visible behind the unavailable diagnostic cross.
+  // displayPreview() changes this to "invalid" once the black diagnostic PNG
+  // is ready, or to "valid" for a normal replacement.
+  preview.dataset.previewReady = "pending";
+  preview.dataset.valid = String(valid);
+  preview.setAttribute("aria-label", `${valid ? "Picked color" : "Out-of-gamut color"}; ${VIEW_NAMES[selectedView]}. Choose view transform`);
+  backgroundValue.textContent = currentBackgroundJ().toFixed(3);
+  const backgroundDescription = `Surround J' ${currentBackgroundJ().toFixed(3)} in the fixed HDR P3 authoring scale`;
+  backgroundValue.title = backgroundDescription;
+  backgroundRange.setAttribute("aria-valuetext", backgroundDescription);
   backgroundSnap = finite(values[19], 0);
   backgroundStick.hidden = false;
-  backgroundStick.style.left = `${backgroundSliderPosition(backgroundSnap) * 100}%`;
-  drawIndicators();
+  backgroundStick.style.left = `${clamp01(backgroundSnap) * 100}%`;
+}
+function evaluationIsCurrent(response: EvaluateResponse | PreviewResponse) {
+  return !pageClosed && response.id === evaluationId && response.profile === selectedView &&
+    response.j === code.j && response.fittedRadiusX === code.x && response.fittedRadiusY === code.y &&
+    Math.abs(response.backgroundJ - currentBackgroundJ()) < 1e-12;
+}
+function responseBelongsToCurrentView(response: EvaluateResponse | PreviewResponse) {
+  return !pageClosed && response.profile === selectedView;
+}
+function responseMayAdvanceDuringGesture(response: EvaluateResponse | PreviewResponse) {
+  return responseBelongsToCurrentView(response) &&
+    (activeAxis !== null || evaluationIsCurrent(response));
+}
+async function displayPreview(response: PreviewResponse) {
+  if (!responseMayAdvanceDuringGesture(response)) return;
+  previewDecodeActive = true;
+  const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
+  const nextImage = new Image(256, 256);
+  nextImage.id = "preview-image";
+  nextImage.alt = `Picked color and background — ${VIEW_NAMES[response.profile as ViewId]}`;
+  nextImage.src = url;
+  try {
+    await nextImage.decode();
+    if (!responseMayAdvanceDuringGesture(response)) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    const previousUrl = previewUrl;
+    previewImage.replaceWith(nextImage);
+    previewImage = nextImage;
+    previewUrl = url;
+    preview.dataset.view = String(response.profile);
+    preview.dataset.imageGeneration = String(response.id);
+    preview.dataset.imageCode = JSON.stringify([response.j, response.fittedRadiusX, response.fittedRadiusY, response.backgroundJ]);
+    preview.classList.toggle("preview-unavailable", !response.valid);
+    preview.dataset.valid = String(response.valid);
+    preview.dataset.previewReady = response.valid ? "valid" : "invalid";
+    previewStatus.hidden = true;
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+  } catch {
+    URL.revokeObjectURL(url);
+    if (responseMayAdvanceDuringGesture(response)) {
+      previewStatus.textContent = "Preview could not be decoded; previous image retained.";
+      previewStatus.hidden = false;
+    }
+  } finally {
+    previewDecodeActive = false;
+    const next = queuedPreview;
+    queuedPreview = undefined;
+    if (next) queuePreview(next);
+  }
+}
+function queuePreview(response: PreviewResponse) {
+  if (!responseMayAdvanceDuringGesture(response)) return;
+  if (previewDecodeActive) {
+    if (!queuedPreview || response.id > queuedPreview.id) queuedPreview = response;
+    return;
+  }
+  void displayPreview(response);
+}
+async function displaySlice(response: RenderResponse, key: string) {
+  if (!currentRender || currentRender.id !== response.id) return;
+  const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
+  const nextImage = new Image(response.width, response.height);
+  nextImage.alt = "J', x', and y' gamut slice";
+  nextImage.src = url;
+  try {
+    await nextImage.decode();
+    if (!currentRender || currentRender.id !== response.id) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    const mayAdvanceGesture = activeAxis === "j";
+    const exactState = stateKey(currentCode(), response.width) === key;
+    const settledSize = requestedSliceSize();
+    if (pageClosed || response.profile !== selectedView ||
+      (!mayAdvanceGesture && (!exactState || response.width !== settledSize))) {
+      URL.revokeObjectURL(url);
+      currentRender = undefined;
+      if (!pageClosed) requestRender();
+      return;
+    }
+    const previousUrl = sliceUrl;
+    gamutSliceImage.src = url;
+    gamutSliceImage.dataset.renderer = response.renderer;
+    gamutSliceImage.dataset.view = String(response.profile);
+    gamutSliceImage.dataset.imageGeneration = String(response.id);
+    gamutSliceImage.dataset.imageCode = JSON.stringify([response.j]);
+    if (response.renderer === "webgpu") confirmedSliceRenderer = "webgpu";
+    else if (confirmedSliceRenderer === "unknown") confirmedSliceRenderer = "wasm";
+    plotFrame.dataset.sliceRenderer = confirmedSliceRenderer;
+    sliceUrl = url;
+    sliceSize = response.width;
+    imageKey = key;
+    currentRender = undefined;
+    plotFrame.setAttribute("aria-busy", "false");
+    plotStatus.hidden = true;
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+    requestRender();
+  } catch {
+    URL.revokeObjectURL(url);
+    if (currentRender?.id === response.id) {
+      currentRender = undefined;
+      plotFrame.setAttribute("aria-busy", "false");
+      plotStatus.textContent = "Slice image could not be decoded; previous image retained.";
+      plotStatus.hidden = false;
+      if (stateKey() !== key) requestRender();
+    }
+  }
 }
 function requestEvaluate() {
   const code = currentCode();
   const id = ++evaluationId;
-  workers[0].postMessage({
+  evaluatorWorker.postMessage({
     kind: "evaluate",
     id,
     profile: currentProfile(),
     j: code.j,
-    saturationX: code.x,
-    saturationY: code.y,
-    background: backgroundFromSlider(),
+    fittedRadiusX: code.x,
+    fittedRadiusY: code.y,
+    backgroundJ: currentBackgroundJ(),
   });
 }
 function requestRender() {
-  const size = activeAxis === "j" ? PREVIEW : FULL;
-  const profile = currentProfile();
+  const size = requestedSliceSize();
   const code = currentCode();
-  const key = stateKey(profile, code);
-  if (imageKey === key && canvas.width === size) {
-    drawIndicators();
+  const key = stateKey(code, size);
+  if (imageKey === key && sliceSize === size) {
     return;
   }
   plotFrame.setAttribute("aria-busy", "true");
-  if (currentRender)
-    workers.forEach((worker) =>
-      worker.postMessage({ kind: "cancel-render", id: currentRender!.id }),
-    );
+  // Keep one slice frame in flight. Pointer updates merely change the latest
+  // desired state; displaySlice() requests that state after this frame lands.
+  // This avoids starvation when fast gestures previously cancelled every job.
+  if (currentRender) return;
   const id = ++renderId;
-  const pending = new Set<number>();
-  const pixels = new Uint8ClampedArray(size * size * 4);
-  const rows = Math.ceil(size / workers.length);
-  currentRender = { id, key, width: size, height: size, pixels, pending };
-  workers.forEach((worker, index) => {
-    const yStart = Math.min(size, index * rows);
-    const yEnd = Math.min(size, yStart + rows);
-    if (yStart >= yEnd) return;
-    pending.add(index);
-    worker.postMessage({
-      kind: "render",
-      id,
-      profile,
-      j: code.j,
-      width: size,
-      height: size,
-      yStart,
-      yEnd,
-      displayP3: useDisplayP3(profile),
-    });
+  currentRender = { id, key, profile: selectedView, j: code.j, width: size, height: size };
+  sliceWorker.postMessage({
+    kind: "render",
+    id,
+    profile: currentProfile(),
+    j: code.j,
+    width: size,
+    height: size,
   });
 }
-function schedule(full = false) {
-  if (full) {
-    activeAxis = null;
-    queuedFullRender = true;
-  } else if (activeAxis === "j") {
-    // A newer J interaction supersedes a full-resolution request queued by
-    // an earlier control settlement in the same animation frame.
-    queuedFullRender = false;
-  }
-  updateBackground();
-  if (framePending) return;
-  framePending = true;
-  requestAnimationFrame(() => {
-    framePending = false;
-    if (queuedFullRender) activeAxis = null;
-    queuedFullRender = false;
-    requestEvaluate();
-    requestRender();
-  });
+function schedule() {
+  // Pointer events can arrive faster than animation frames. The workers
+  // already coalesce and cancel stale requests, so submit the newest state
+  // immediately rather than waiting for rAF; this keeps J'/XY gestures live
+  // even during fast drags while retaining bounded worker work.
+  requestEvaluate();
+  requestRender();
 }
-function parsePatches(values: Float64Array, profile: number) {
+function parsePatches(values: Float64Array) {
   if (values.length !== PATCH_NAMES.length * 10) return;
   const patches: Patch[] = [];
   for (let i = 0; i < PATCH_NAMES.length; i++) {
@@ -473,44 +609,52 @@ function parsePatches(values: Float64Array, profile: number) {
   }
   currentPatches = patches;
   activePatch = null;
-  updatePatchCandidate();
+  activeTarget = null;
+  updatePatchCandidate(false);
 }
 function requestPatches() {
   currentPatches = [];
   activePatch = null;
+  activeTarget = null;
+  plotFrame.dataset.snapTarget = "none";
+  plotFrame.dataset.jSnapTarget = "none";
+  plotFrame.dataset.colorcheckerRingCount = "0";
   updatePatchLocators();
-  drawIndicators();
   const id = ++checkerId;
   checkerWorker.postMessage({
     kind: "colorchecker",
     id,
-    profile: currentProfile(),
+    profile: SOURCE_PROFILE,
   });
 }
-function profileSwitch() {
-  const target = currentProfile();
-  if (target === sliderProfile) return;
-  const linear = retainedLinear;
-  const id = ++setId;
-  const acescg = sliderProfile !== 3;
-  workers[0].postMessage({
-    kind: "set",
-    id,
-    profile: target,
-    red: linear[0],
-    green: linear[1],
-    blue: linear[2],
-    acescg,
-    sourceProfile: sliderProfile,
-    linear: true,
-    sourceJ: currentCode().j,
-    background: backgroundFromSlider(),
-  });
-  plotStatus.hidden = false;
-  plotStatus.textContent = "Converting profile…";
-  requestPatches();
+function chooseView(view: ViewId) {
+  cancelSliceTracking();
+  finishJWheelInteraction(false);
+  selectedView = view;
+  preview.title = `${VIEW_NAMES[view]} — click to change view`;
+  viewButtons.forEach(button => button.setAttribute("aria-checked", String(Number(button.dataset.view) === view)));
+  closeViewMenu(true);
+  // No coordinate conversion, marker reload, snap projection, or background edit.
+  schedule();
+}
+function closeViewMenu(restoreFocus = false) {
+  viewMenu.hidden = true;
+  preview.setAttribute("aria-expanded", "false");
+  if (restoreFocus) preview.focus({ preventScroll: true });
+}
+function openViewMenu() {
+  viewMenu.hidden = false;
+  preview.setAttribute("aria-expanded", "true");
+  const rect = preview.getBoundingClientRect();
+  const width = Math.min(370, innerWidth - 20);
+  viewMenu.style.width = `${width}px`;
+  viewMenu.style.left = `${Math.max(10, Math.min(rect.left, innerWidth - width - 10))}px`;
+  viewMenu.style.top = `${Math.max(10, Math.min(rect.bottom + 4, innerHeight - viewMenu.offsetHeight - 10))}px`;
+  viewButtons.find(button => Number(button.dataset.view) === selectedView)?.focus({ preventScroll: true });
 }
 function setFromHex() {
+  cancelSliceTracking();
+  finishJWheelInteraction(false);
   const decoded = decodeHex(encodedValue.value);
   if (!decoded) {
     encodedValue.setCustomValidity("Enter exactly six hexadecimal digits.");
@@ -519,22 +663,22 @@ function setFromHex() {
   }
   encodedValue.setCustomValidity("");
   const id = ++setId;
-  workers[0].postMessage({
+  evaluatorWorker.postMessage({
     kind: "set",
     id,
-    profile: currentProfile(),
+    profile: SOURCE_PROFILE,
     red: decoded[0],
     green: decoded[1],
     blue: decoded[2],
-    acescg: currentProfile() !== 3,
   });
 }
 
-workers.forEach((worker, workerIndex) => {
+[sliceWorker, evaluatorWorker].forEach((worker) => {
   worker.onmessage = (
     event: MessageEvent<
       | RenderResponse
       | EvaluateResponse
+      | PreviewResponse
       | ColorCheckerResponse
       | SetResponse
       | WorkerError
@@ -543,15 +687,19 @@ workers.forEach((worker, workerIndex) => {
     const response = event.data;
     if (response.kind === "worker-error") {
       const current =
-        response.profile === currentProfile() &&
         ((response.operation === "render" &&
           response.id === currentRender?.id) ||
-          (response.operation === "evaluate" && response.id === evaluationId) ||
+          ((response.operation === "evaluate" || response.operation === "preview") && response.id === evaluationId) ||
           (response.operation === "colorchecker" &&
             response.id === checkerId) ||
           (response.operation === "set" && response.id === setId));
       if (!current) return;
-      if (response.operation === "render") {
+      if (response.operation === "preview") {
+        previewStatus.textContent = "Preview encoding failed; previous image retained.";
+        previewStatus.hidden = false;
+        return;
+      }
+      if (response.operation === "render" || response.operation === "slice") {
         currentRender = undefined;
         plotFrame.setAttribute("aria-busy", "false");
       }
@@ -560,162 +708,391 @@ workers.forEach((worker, workerIndex) => {
       return;
     }
     if (response.kind === "colorchecker") {
-      if (response.id === checkerId && response.profile === currentProfile())
-        parsePatches(response.points, response.profile);
+      if (response.id === checkerId)
+        parsePatches(response.points);
       return;
     }
     if (response.kind === "set") {
       if (
         response.id !== setId ||
-        response.profile !== currentProfile() ||
         response.values.length < 4
       )
         return;
-      setCode("j", response.values[1]);
-      setCode("x", response.values[2]);
-      setCode("y", response.values[3]);
-      if (
-        response.values.length >= 7 &&
-        response.values.slice(4, 7).every(Number.isFinite)
-      ) {
-        retainedLinear = [
-          response.values[4],
-          response.values[5],
-          response.values[6],
-        ];
-        canonicalLocked = true;
-      }
-      if (
-        response.background !== undefined &&
-        Number.isFinite(response.background)
-      )
-        backgroundRange.value = backgroundSliderPosition(
-          response.background,
-        ).toString();
-      sliderProfile = response.profile;
-      if (response.values[0] > 0.5) updatePatchCandidate();
+      setAllCode({
+        j: response.values[1],
+        x: response.values[2],
+        y: response.values[3],
+      });
+      if (response.values[0] > 0.5) updatePatchCandidate(false);
       else {
         activePatch = null;
+        activeTarget = null;
         updatePatchLocators();
-        drawIndicators();
       }
-      schedule(true);
+      schedule();
       return;
     }
     if (response.kind === "evaluate") {
-      if (response.id !== evaluationId || response.profile !== currentProfile())
-        return;
-      const code = currentCode();
-      if (
-        response.j !== code.j ||
-        response.saturationX !== code.x ||
-        response.saturationY !== code.y ||
-        Math.abs(response.background - backgroundFromSlider()) > 1e-12
-      )
-        return;
-      displayValues(response.values);
+      if (responseMayAdvanceDuringGesture(response) && response.id > latestValueResponseId) {
+        latestValueResponseId = response.id;
+        displayValues(response.values);
+      }
       return;
     }
-    if (response.kind === "render") {
+    if (response.kind === "preview") {
+      queuePreview(response);
+      return;
+    }
+    if (response.kind === "slice") {
       const render = currentRender;
       if (
         !render ||
         response.id !== render.id ||
-        response.profile !== currentProfile() ||
+        response.profile !== render.profile ||
         response.width !== render.width ||
-        response.height !== render.height
+        response.height !== render.height ||
+        response.j !== render.j
       )
         return;
-      const rows = Math.ceil(render.height / workers.length);
-      const expectedStart = workerIndex * rows;
-      const expectedLength =
-        Math.max(
-          0,
-          Math.min(render.height, expectedStart + rows) - expectedStart,
-        ) *
-        render.width *
-        4;
-      if (
-        response.yStart !== expectedStart ||
-        response.pixels.length !== expectedLength ||
-        !render.pending.delete(workerIndex)
-      )
-        return;
-      render.pixels.set(response.pixels, response.yStart * render.width * 4);
-      if (render.pending.size === 0) {
-        try {
-          image = new ImageData(render.width, render.height, {
-            colorSpace: useDisplayP3() ? "display-p3" : "srgb",
-          });
-        } catch {
-          image = new ImageData(render.width, render.height);
-          displayP3Canvas = false;
-        }
-        image.data.set(render.pixels);
-        canvas.width = render.width;
-        canvas.height = render.height;
-        context = displayP3Context(canvas);
-        context.putImageData(image, 0, 0);
-        imageKey = render.key;
-        currentRender = undefined;
-        drawIndicators();
-        plotFrame.setAttribute("aria-busy", "false");
-        plotStatus.hidden = true;
-      }
+      void displaySlice(response, render.key);
     }
   };
 });
 
-function connectRange(
-  range: HTMLInputElement,
-  number: HTMLInputElement,
-  axis: "j" | "x" | "y",
-) {
-  range.addEventListener("input", () => {
-    canonicalLocked = false;
-    activeAxis = axis;
-    snapAxis(axis);
-    schedule(axis === "j" ? false : true);
-  });
-  range.addEventListener("change", () => {
-    activeAxis = null;
-    schedule(true);
-  });
-  number.addEventListener("input", () => {
-    if (!number.value.trim()) return;
-    const value = Number(number.value);
-    if (Number.isFinite(value)) {
-      canonicalLocked = false;
-      setCode(axis, value);
-      activeAxis = axis;
-      snapAxis(axis);
-      schedule(axis === "j" ? false : true);
-    }
-  });
-  number.addEventListener("change", () => {
-    const value = Number(number.value);
-    if (Number.isFinite(value)) {
-      canonicalLocked = false;
-      setCode(axis, value);
-    } else syncNumbers();
-    activeAxis = null;
-    schedule(true);
-  });
+function jWheelEventTime(event: PointerEvent) {
+  return Number.isFinite(event.timeStamp) && event.timeStamp > 0
+    ? event.timeStamp
+    : performance.now();
 }
-connectRange(jRange, jNumber, "j");
-connectRange(xRange, xNumber, "x");
-connectRange(yRange, yNumber, "y");
+function beginJWheelMotion(event: PointerEvent, tracking: "mouse-active" | "drag-active") {
+  jWheelLastX = event.clientX;
+  jWheelLastY = event.clientY;
+  jWheelLastTime = jWheelEventTime(event);
+  jWheelVelocityX = 0;
+  jWheelVelocityY = 0;
+  activeAxis = "j";
+  jWheel.dataset.tracking = tracking;
+  jWheel.classList.add("is-tracking");
+  jNumber.blur();
+}
+function applyJWheelMotion(event: PointerEvent) {
+  const rect = jWheel.getBoundingClientRect();
+  const deltaX = event.clientX - jWheelLastX;
+  const deltaY = event.clientY - jWheelLastY;
+  const eventTime = jWheelEventTime(event);
+  const elapsedMs = Math.max(1, eventTime - jWheelLastTime);
+  const velocity = rollingBallVelocity(
+    { x: jWheelVelocityX, y: jWheelVelocityY },
+    deltaX,
+    deltaY,
+    rect.height,
+    rect.height,
+    elapsedMs,
+  );
+  jWheelVelocityX = velocity.x;
+  jWheelVelocityY = velocity.y;
+  jWheelLastX = event.clientX;
+  jWheelLastY = event.clientY;
+  jWheelLastTime = eventTime;
+  if (deltaX === 0 && deltaY === 0) return;
+  jWheelTextureOffset += deltaY;
+  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
+  invalidatePendingSet();
+  activeAxis = "j";
+  setRealCode(
+    "j",
+    rollingWheelDelta(
+      realCode.j,
+      deltaY,
+      rect.height,
+      ROLLING_BALL_SENSITIVITY,
+      acceleration,
+    ),
+  );
+  updatePatchCandidate();
+  schedule();
+  event.preventDefault();
+}
+function finishJWheelInteraction(scheduleFinal = true) {
+  const wasActive = jWheelMouseTracking || jWheelPointerId !== null;
+  const capturedPointer = jWheelPointerId;
+  if (capturedPointer !== null) {
+    try {
+      if (jWheel.hasPointerCapture?.(capturedPointer))
+        jWheel.releasePointerCapture(capturedPointer);
+    } catch {
+      // Synthetic events and browsers without active capture may have no capture.
+    }
+  }
+  jWheelMouseTracking = false;
+  jWheelPointerId = null;
+  jWheelVelocityX = 0;
+  jWheelVelocityY = 0;
+  jWheelLastTime = 0;
+  jWheel.dataset.tracking = "idle";
+  jWheel.classList.remove("is-tracking");
+  if (!wasActive) return;
+  activeAxis = null;
+  jNumber.value = code.j.toFixed(3);
+  if (scheduleFinal) schedule();
+}
+jWheel.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse") {
+    if (event.button !== 0 || jWheelMouseTracking) return;
+    cancelSliceTracking();
+    jWheelMouseTracking = true;
+    beginJWheelMotion(event, "mouse-active");
+    event.stopPropagation();
+    event.preventDefault();
+    return;
+  }
+  if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+  finishJWheelInteraction(false);
+  cancelSliceTracking();
+  jWheelPointerId = event.pointerId;
+  beginJWheelMotion(event, "drag-active");
+  try {
+    jWheel.setPointerCapture?.(event.pointerId);
+  } catch {
+    // Synthetic events and browsers without active capture can reject this.
+  }
+  event.stopPropagation();
+  event.preventDefault();
+});
+jWheel.addEventListener("pointermove", (event) => {
+  if (event.pointerId !== jWheelPointerId) return;
+  applyJWheelMotion(event);
+});
+jWheel.addEventListener("pointerup", (event) => {
+  if (event.pointerId !== jWheelPointerId) return;
+  finishJWheelInteraction();
+  event.preventDefault();
+});
+jWheel.addEventListener("pointercancel", (event) => {
+  if (event.pointerId !== jWheelPointerId) return;
+  finishJWheelInteraction();
+});
+document.addEventListener("pointermove", (event) => {
+  if (!jWheelMouseTracking || event.pointerType !== "mouse") return;
+  applyJWheelMotion(event);
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!jWheelMouseTracking || event.pointerType !== "mouse" || event.button !== 0)
+    return;
+  jWheelSuppressClick = true;
+  window.setTimeout(() => { jWheelSuppressClick = false; }, 300);
+  finishJWheelInteraction();
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+document.addEventListener("click", (event) => {
+  if (!jWheelSuppressClick) return;
+  jWheelSuppressClick = false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+jWheel.addEventListener("keydown", (event) => {
+  const step = event.shiftKey ? 0.05 : 0.01;
+  let delta = 0;
+  if (event.key === "ArrowUp") delta = step;
+  else if (event.key === "ArrowDown") delta = -step;
+  else if (event.key === "Home") delta = -1;
+  else if (event.key === "End") delta = 1;
+  else return;
+  event.preventDefault();
+  finishJWheelInteraction(false);
+  invalidatePendingSet();
+  activeAxis = "j";
+  setRealCode("j", event.key === "Home" ? 0 : event.key === "End" ? 1 : realCode.j + delta);
+  updatePatchCandidate();
+  activeAxis = null;
+  schedule();
+});
+
+function applyJNumber(format = false) {
+  const value = Number(jNumber.value);
+  if (!Number.isFinite(value)) {
+    if (format) jNumber.value = code.j.toFixed(3);
+    return;
+  }
+  finishJWheelInteraction(false);
+  invalidatePendingSet();
+  activeAxis = "j";
+  setRealCode("j", value);
+  updatePatchCandidate();
+  activeAxis = null;
+  if (format) jNumber.value = code.j.toFixed(3);
+  schedule();
+}
+jNumber.addEventListener("input", () => applyJNumber());
+jNumber.addEventListener("change", () => applyJNumber(true));
+jNumber.addEventListener("blur", () => {
+  jNumber.value = code.j.toFixed(3);
+});
+
+function applySlicePointer(event: PointerEvent) {
+  const point = slicePoint(event.clientX, event.clientY, gamutSliceImage.getBoundingClientRect());
+  invalidatePendingSet();
+  activeAxis = "xy";
+  setRealCode("x", point.x);
+  setRealCode("y", point.y);
+  updatePatchCandidate();
+  schedule();
+}
+function cancelSliceTracking() {
+  sliceTrackingActive = false;
+  plotFrame.classList.remove("slice-tracking");
+  plotFrame.dataset.sliceTracking = "idle";
+  if (sliceTouchPointerId !== null) {
+    try {
+      if (plotFrame.hasPointerCapture?.(sliceTouchPointerId)) plotFrame.releasePointerCapture(sliceTouchPointerId);
+    } catch { /* capture may already be released */ }
+  }
+  sliceTouchPointerId = null;
+  sliceTouchVelocityX = 0;
+  sliceTouchVelocityY = 0;
+  sliceTouchLastTime = 0;
+  activeAxis = null;
+  updatePlotLabel();
+}
+function commitSliceTracking(event?: PointerEvent) {
+  if (!sliceTrackingActive) return;
+  if (event && event.target === gamutSliceImage) applySlicePointer(event);
+  cancelSliceTracking();
+  schedule();
+}
+plotFrame.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse") {
+    if (event.button !== 0) return;
+    if (!sliceTrackingActive) {
+      sliceTrackingActive = true;
+      plotFrame.classList.add("slice-tracking");
+      plotFrame.dataset.sliceTracking = "active";
+      applySlicePointer(event);
+    } else {
+      commitSliceTracking(event);
+    }
+    event.stopPropagation();
+    event.preventDefault();
+    return;
+  }
+  if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+  // Slice and wheel gestures are mutually exclusive. A touch/pen slice start
+  // must terminate any document-level mouse wheel tracking left by a desktop
+  // pointer sequence before capturing this pointer.
+  finishJWheelInteraction(false);
+  cancelSliceTracking();
+  sliceTouchPointerId = event.pointerId;
+  sliceTouchLastX = event.clientX;
+  sliceTouchLastY = event.clientY;
+  sliceTouchLastTime = Number.isFinite(event.timeStamp) && event.timeStamp > 0 ? event.timeStamp : performance.now();
+  sliceTouchVelocityX = 0;
+  sliceTouchVelocityY = 0;
+  activeAxis = "xy";
+  plotFrame.dataset.sliceTracking = "touch-active";
+  plotFrame.classList.add("slice-tracking");
+  updatePlotLabel();
+  try { plotFrame.setPointerCapture?.(event.pointerId); } catch { /* synthetic events */ }
+  event.preventDefault();
+});
+document.addEventListener("pointermove", (event) => {
+  if (!sliceTrackingActive || event.pointerType !== "mouse") return;
+  applySlicePointer(event);
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!sliceTrackingActive || event.pointerType !== "mouse" || event.button !== 0)
+    return;
+  if (event.target !== gamutSliceImage) commitSliceTracking();
+});
+plotFrame.addEventListener("pointermove", (event) => {
+  if ((event.pointerType !== "touch" && event.pointerType !== "pen") || event.pointerId !== sliceTouchPointerId) return;
+  const rect = plotFrame.getBoundingClientRect();
+  const dx = event.clientX - sliceTouchLastX;
+  const dy = event.clientY - sliceTouchLastY;
+  const eventTime = Number.isFinite(event.timeStamp) && event.timeStamp > 0 ? event.timeStamp : performance.now();
+  const elapsedMs = Math.max(1, eventTime - sliceTouchLastTime);
+  const velocity = rollingBallVelocity({ x: sliceTouchVelocityX, y: sliceTouchVelocityY }, dx, dy, rect.width, rect.height, elapsedMs);
+  sliceTouchVelocityX = velocity.x;
+  sliceTouchVelocityY = velocity.y;
+  sliceTouchLastX = event.clientX;
+  sliceTouchLastY = event.clientY;
+  sliceTouchLastTime = eventTime;
+  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
+  const next = rollingBallDelta(realCode.x, realCode.y, dx, dy, rect.width, rect.height, ROLLING_BALL_SENSITIVITY, acceleration);
+  invalidatePendingSet();
+  setRealCode("x", next.x);
+  setRealCode("y", next.y);
+  updatePatchCandidate();
+  schedule();
+  event.preventDefault();
+});
+function finishSliceTouch(event: PointerEvent) {
+  if (event.pointerId !== sliceTouchPointerId) return;
+  try { if (plotFrame.hasPointerCapture?.(event.pointerId)) plotFrame.releasePointerCapture(event.pointerId); } catch { /* synthetic events */ }
+  sliceTouchPointerId = null;
+  sliceTouchVelocityX = 0;
+  sliceTouchVelocityY = 0;
+  sliceTouchLastTime = 0;
+  plotFrame.dataset.sliceTracking = "idle";
+  plotFrame.classList.remove("slice-tracking");
+  activeAxis = null;
+  updatePlotLabel();
+  schedule();
+}
+plotFrame.addEventListener("pointerup", finishSliceTouch);
+plotFrame.addEventListener("pointercancel", finishSliceTouch);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    cancelSliceTracking();
+    finishJWheelInteraction();
+  }
+});
 backgroundRange.addEventListener("input", () => {
+  invalidatePendingSet();
   if (
     backgroundSnap !== null &&
-    Math.abs(backgroundFromSlider() - backgroundSnap) <= 0.02 * 1.2
+    Math.abs(Number(backgroundRange.value) - backgroundSnap) <= 0.02
   ) {
-    backgroundRange.value = backgroundSliderPosition(backgroundSnap).toString();
+    backgroundRange.value = backgroundSnap.toString();
   }
-  schedule(false);
+  backgroundValue.textContent = currentBackgroundJ().toFixed(3);
+  schedule();
 });
-backgroundRange.addEventListener("change", () => schedule(true));
-profileSelect.addEventListener("change", profileSwitch);
+backgroundRange.addEventListener("change", () => {
+  invalidatePendingSet();
+  schedule();
+});
+preview.addEventListener("click", () => viewMenu.hidden ? openViewMenu() : closeViewMenu());
+viewButtons.forEach(button => button.addEventListener("click", () => {
+  const view = Number(button.dataset.view) as ViewId;
+  if (VIEW_IDS.includes(view)) chooseView(view);
+}));
+viewMenu.addEventListener("keydown", event => {
+  const index = viewButtons.indexOf(document.activeElement as HTMLButtonElement);
+  let next: number | undefined;
+  if (event.key === "ArrowDown") next = (index + 1) % viewButtons.length;
+  if (event.key === "ArrowUp") next = (index + viewButtons.length - 1) % viewButtons.length;
+  if (event.key === "Home") next = 0;
+  if (event.key === "End") next = viewButtons.length - 1;
+  if (next !== undefined) { event.preventDefault(); viewButtons[next].focus(); }
+  if (event.key === "Escape") { event.preventDefault(); closeViewMenu(true); }
+  if (event.key === "Tab") closeViewMenu();
+});
+document.addEventListener("pointerdown", event => {
+  if (!viewMenu.hidden && !viewMenu.contains(event.target as Node) && !preview.contains(event.target as Node)) closeViewMenu();
+});
+window.addEventListener("resize", () => {
+  closeViewMenu();
+  updateJWheelVisual();
+});
+window.addEventListener("pagehide", () => {
+  pageClosed = true;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  if (sliceUrl) URL.revokeObjectURL(sliceUrl);
+});
+window.addEventListener("pageshow", () => {
+  if (pageClosed) { pageClosed = false; schedule(); }
+});
 copyValue.addEventListener("click", async () => {
   try {
     await navigator.clipboard?.writeText(encodedValue.value);
@@ -732,7 +1109,14 @@ encodedValue.addEventListener("keydown", (event) => {
   }
 });
 
-syncNumbers();
+setAllCode(code);
+paintCheckerboard();
+drawIndicators();
+plotFrame.dataset.sliceTracking = "idle";
+jWheel.dataset.tracking = "idle";
+jReferenceTick.style.bottom = `${J_REFERENCE_WHITE * 100}%`;
+jReferenceTick.title = `100 nits — J\u2032 ${J_REFERENCE_WHITE.toFixed(6)}`;
+backgroundRange.value = "0.15";
 updateBackground();
 requestPatches();
 requestEvaluate();

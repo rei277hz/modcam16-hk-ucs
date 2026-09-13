@@ -1,228 +1,293 @@
 # modCAM16-HK Cartesian Color Picker — Final Desired Behavior
 
-This document is the working behavior contract for the browser color picker in
-this repository. It must be updated whenever implementation findings require a
-change to the intended behavior. Color calculation, rendering, picking, and
-clipboard entry remain local to the browser.
+This is the living behavior contract for the local browser picker. Update it
+alongside IMPLEMENTATION_CHECKLIST.md whenever a finding changes the contract.
+The fixed authoring pipeline below supersedes the former five-profile workflow.
 
-## Workspace and controls
+## Fixed authoring and independent presentation
 
-The page is a single responsive dark workspace based on the picker at
-`/home/rust/workspace/colors/web/index.html`. It contains:
+(J', x', y') always specifies **linear P3-D65 source display RGB**. One source
+unit represents 203 nits. Convert source RGB to D65 XYZ, scale by 2.03 once,
+then apply the inverse **ACES 2.0 - HDR 1000 nits (P3 D65)** view transform.
+The result is canonical scene-linear ACEScg/AP1.
 
-- a square gamut-slice raster with a transparent indicator layer;
-- a picked-color preview, linear readout, encoded hexadecimal entry, and
-  background-surround control;
-- a profile selector and three normalized controls: `J_HK`, `Saturation X`,
-  and `Saturation Y`;
-- ColorChecker markers, the selected patch name, and snapping locators.
+The selected view applies its forward ACES 2.0 transform to that same scene
+value. View changes must leave real and displayed coordinates, canonical
+ACEScg, Background, ColorChecker coordinates, active target, and all snapping
+locators unchanged. They regenerate both images. The gamut slice is rendered
+through the selected view and shows its after-transform display-linear values;
+its source authoring coordinates remain fixed.
 
-Every coordinate control has a range input and numeric input. All three expose
-the raw authored channel range `0..1`; they do not use percentage, polar, or
-signed presentation mappings. The viewport is informative rather than a
-pointer input surface: users select colors with the sliders and numeric inputs.
+The browser offers these stable view IDs in this order:
 
-The former Temp/Tint group and Reset/Store/Recall buttons are not present.
+| ID | View | Preview encoding |
+| --- | --- | --- |
+| 1 | ACES 2.0 - SDR 100 nits (Rec.709) | 8-bit RGB PNG, sRGB transfer, embedded sRGB ICC |
+| 4 | ACES 2.0 - SDR 100 nits (P3 D65) | 8-bit RGB PNG, sRGB transfer, embedded Display P3 ICC |
+| 2 | ACES 2.0 - HDR 1000 nits (P3 D65) | 16-bit RGB PNG, PQ, P3-D65 cICP |
+| 0 | ACES 2.0 - HDR 1000 nits (Rec.2020) | 16-bit RGB PNG, PQ, Rec.2020-D65 cICP |
 
-## Profiles and stable identifiers
+All four options are always enabled, as explicitly selected in the approved
+plan; do not capability-gate the menu. Browser/OS/display support determines
+whether an encoded image is actually presented in HDR or wide gamut. The
+former direct Rec.709 / No view transform (ID 3) is absent from the browser.
 
-Profile IDs are implementation identifiers and must not be renumbered:
+## J' and fitted-radius channels
 
-| ID  | Profile                                                         |
-| --- | --------------------------------------------------------------- |
-| `0` | Rec.2020 (P3-D65 limited) / ACES 2.0 - HDR 1000 nits (Rec.2020) |
-| `1` | Rec.709 / ACES 2.0 - SDR 100 nits (Rec.709)                     |
-| `2` | P3-D65 / ACES 2.0 - HDR 1000 nits (P3 D65)                      |
-| `3` | Rec.709 / No view transform                                     |
-| `4` | P3-D65 / ACES 2.0 - SDR 100 nits (P3 D65)                       |
+Keep the common D65 appearance context: reference white 203 nits, adapting
+luminance 20.3 nits, background ratio 0.10, complete adaptation, surround
+c = 0.525 and Nc = 0.8, HK coefficient 66, z = 1.48 + sqrt(0.10).
 
-The visible menu order is `3`, `1`, `4`, `2`, `0`. The source-gamut text
-before `/` and the transform text after it are part of the visible contract.
-
-Profiles `0` and `2` use the HDR appearance model and J normalization.
-Profiles `1`, `3`, and `4` use the SDR appearance model and J normalization.
-
-## Normalized JHK encoding
-
-The coordinates match the raw channel encoding used by
-`/home/rust/workspace/substance-3d-painter-shaders/modcam16-hk-view/`.
-
-For HDR profiles:
+J' is linear in J_HK, not in luminance:
 
 ```text
-J_HK = codeJ * J_HK(1000-nit HDR white)
+J_HK = J' * 217.2768649129496
+100-nit neutral: source P3 = 100/203, J_HK = 76.02655940839014
+fixed 100-nit locator: J' = 0.34990637148068954
+203-nit neutral: source P3 = 1, J_HK = 100, J' = 0.4602422813863053
+1000-nit neutral: source P3 = 1000/203, J' = 1
 ```
 
-For SDR and direct Rec.709 profiles:
+J' = 0 means J_HK = 0. The 100-nit locator and the 203-nit appearance
+reference are distinct. The old 183.7488220212894 endpoint must not be used by
+the browser; legacy APIs retain it only for regression coverage.
+
+The x'/y' encoding and orientation remain:
 
 ```text
-J_CODE_REFERENCE = J_HK(203-nit HDR white) / J_HK(1000-nit HDR white)
-J_HK = codeJ * (100 / J_CODE_REFERENCE)
+x = 2*x' - 1
+y = 2*y' - 1
+R = hypot(x, y)
+s = 6.900502700352508 * expm1(3.185803578575629 * R)
+h = atan2(-x, y)
+u = (0.007 / 0.525) * s
+J_A = J_HK^2 / (hypot(J_HK, 33*u) + 33*u)
+C = u * J_A
 ```
 
-The common anchor is approximately `J_CODE_REFERENCE = 0.3679404257`, and the
-HDR scale is approximately `360.4750768692`.
+At black, define the zero-denominator case as J_A = 0. The valid fitted-radius
+domain is R <= 1. Stored channels remain 0..1; (0.5, 0.5) is neutral. Changing
+only J' preserves native saturation/hue. Relative to the earlier cos/sin
+orientation, the same color migrates as x' = 1 - old y', y' = old x'.
 
-Cartesian saturation decodes as:
+## Source gamut slice and unavailable picks
 
-```text
-u = 2 * saturationX - 1
-v = 2 * saturationY - 1
-saturation = sqrt(u*u + v*v)
-hue = atan2(v, u)
-C = saturation * J_HK*J_HK / 66
-```
+The viewport is square Cartesian x'/y', x' increasing rightward and y' upward.
+Its valid mask intersects the fitted-radius disk, finite appearance inversion,
+and the nonnegative P3-D65 source RGB cube up to 1000/203 per channel.
+Small floating-point boundary tolerance is allowed; negative/out-of-peak
+colors are not silently made valid by clamping the inverse transform.
 
-Changing only J while holding X and Y fixed preserves revised-HK hue and
-saturation. `(0.5, 0.5)` is neutral. The valid authored saturation region is
-the unit disk `u*u + v*v <= 1`; all three stored channels remain in `0..1`.
+Above-peak picked colors are unavailable, not inverse-transformed as though
+they represented a clipped target. The readout says Unavailable and the preview
+shows a red cross. The editable hex field retains the last valid entry, labeled
+as such in its tooltip. A valid next pick restores normal output.
 
-## Cartesian gamut slice
+The slice is an RGBA PNG using the selected view's transfer, bit depth, and
+color metadata. WebGPU computes only the slice pixel field when available,
+using the Painter GLSL equation ordering and OCIO-derived parameter tables. A
+WASM batch renderer is the deterministic fallback and supplies the same linear
+display values. Valid gamut pixels are opaque; invalid pixels are transparent.
 
-The square viewport maps Saturation X directly from `0` at the left to `1` at
-the right. Saturation Y maps from `0` at the bottom to `1` at the top. It is not
-a radial Hue/Sat presentation.
+Render every WebGPU slice at 512 by 512, including slices generated during J'
+interaction. The disposable 64 by 64 interaction path is only a UI-acceleration
+fallback after the worker has confirmed that it is rendering with WASM on the
+CPU. X/Y and snap-target changes redraw only the overlay canvas; view or J'
+changes recompute the PNG. Background does not affect the slice.
 
-The visible valid mask is the intersection of:
+## PNG preview and view menu
 
-1. the Cartesian saturation unit disk;
-2. finite, valid modCAM16-HK inversion;
-3. the nonnegative target-gamut RGB cone for the selected profile.
+The gamut viewport is three perfectly aligned layers: a canvas-painted
+checkerboard, an RGBA gamut-slice PNG, and a transparent indicator canvas. The
+PNG contains only the selected view's after-transform display-linear
+`(Rd', Gd', Bd')` values, encoded with the same SDR/HDR transfer, bit depth,
+ICC, cICP, and compression rules as the color preview. Its alpha is fully
+opaque for valid gamut pixels and transparent elsewhere so the checkerboard
+shows through.
 
-The target cone is Rec.709-D65 for profiles `1` and `3`, P3-D65 for profiles
-`2` and `4`, and the intersection required by Rec.2020 with its P3-D65 limit
-for profile `0`. Positive channels above `1.0` remain valid; there is no upper
-unit-cube gamut test. Negative channels are invalid and must not be made valid
-by clipping.
+The top canvas contains every color-picking overlay: all ColorChecker dots and
+dim target rings, the neutral ring/cross, the active ring, and the current
+picked-color marker. Both canvases always keep a 512 by 512 backing store,
+regardless of renderer or middle-PNG resolution, and all three layers share
+the same square CSS bounds. WebGPU PNGs and settled WASM
+PNGs remain 512 by 512; only confirmed WASM rendering may use a coalesced 64 by
+64 PNG during J' interaction, without changing normalized alignment or canvas
+sharpness. The previous decoded slice remains
+visible until a matching replacement is decoded, and stale slice results are
+rejected by the `(view, J', size)` state key.
 
-Valid pixels show the encoded target color. Display output may clip positive
-values above the browser canvas range, but this display clipping does not alter
-validity or the retained linear color. Invalid pixels use a visible unavailable
-mask rather than a fabricated clipped color.
+During a live J' gesture, slice work is serialized rather than repeatedly
+cancelling every in-flight frame: each completed frame may advance the visible
+slice, then the latest queued J' state is rendered. This gives progressive
+updates under fast pointer input; after release, only the exact settled state
+may replace the image.
 
-The settled raster is 512 x 512. During J dragging, a disposable 64 x 64
-preview keeps interaction responsive; settling J requests the full raster.
-X, Y, Background, and indicator-only changes reuse the current slice.
+The whole picked-color/surround composition is one 256 by 256 RGB PNG with a
+centered 186 by 186 swatch (35-pixel border). No separately painted CSS color
+surface or separate Mode row remains. Clicking the preview opens a compact
+four-item view menu, with the active view indicated.
 
-## Color state and profile switching
+SDR samples apply the sRGB transfer curve to the selected linear RGB and
+quantize to 8-bit; both SDR files embed matching, self-contained ICC v2
+matrix/shaper profiles with Bradford-adapted D50 colorants and a sampled sRGB
+decode curve. They also include matching cICP [1,13,0,1] or [12,13,0,1].
 
-For an ACES profile, the selected JHK target is converted through the exact
-ACES 2.0 inverse view function to linear ACEScg/AP1. That actual linear ACEScg
-value is the canonical value preserved when switching among ACES profiles.
-The target profile's forward view is evaluated and all three normalized JHK
-coordinates are solved again; coordinates are profile-local and may change.
+HDR samples apply ST 2084/PQ to the actual absolute luminance then quantize to
+16-bit big-endian RGB. P3 uses cICP [12,16,0,1], Rec.2020 [9,16,0,1].
+Matrix coefficients are RGB identity and the full-range flag is 1. HDR PNGs
+carry no SDR ICC profile. Selected forward-view XYZ/RGB already uses Y=1 at
+100 nits: multiply selected RGB by 100 for nits, not by 203 again.
 
-`Rec.709 / No view transform` is a separate direct-linear-Rec.709 workflow.
-Cross-workflow conversion uses the ACES 2.0 Rec.709 SDR 100-nit view as the
-explicit bridge:
+Encode with DEFLATE level 1 in a dedicated evaluator/image worker. Refresh for
+J'/x'/y'/Background/view changes. Coalesce queued work while allowing completed
+preview frames to advance during fast gestures; the final frame must match the
+settled controls. Publish numerical validity independently of PNG decoding so
+the unavailable state appears during a gesture. While an invalid PNG is
+pending, hide the previous colored image and show one bold cross on black.
+Once decoded, show only the PNG's cross over its black swatch—never both
+diagnostics together.
 
-- ACES to direct evaluates retained ACEScg through that view and derives the
-  direct Rec.709 JHK coordinates.
-- Direct to ACES applies the inverse bridge to the retained direct linear
-  Rec.709 value and derives the selected ACES profile's coordinates.
+Decode a replacement image off-DOM, check the view, generation, and gesture
+state again, then atomically replace the previous image. During an active
+gesture, a newer completed response may advance the image progressively; after
+release, reject anything that does not match the settled controls. Revoke stale
+and superseded blob URLs, retain the previous decoded image on ordinary decode
+failures, and show an accessible failure message. The unavailable transition is
+the exception: hide the old colored swatch until the black diagnostic image is
+ready. No claim of HDR hardware presentation is made by decoding alone.
 
-Positive values above `1.0` are retained as actual linear values during
-profile conversion. If a retained value is not representable by a target
-profile, conversion returns finite coordinates clamped to the nearest J or
-saturation-domain boundary and marks the state unavailable. NaN coordinates
-must never be published to controls.
+The preview button and menu support keyboard focus, Enter/Space, arrow keys,
+Home/End, Escape, Tab, and outside-click dismissal. Menu placement stays within
+the viewport on mobile.
 
-The direct profile shows an actual linear Rec.709 readout. ACES profiles show
-an actual linear ACEScg readout. These numeric readouts may exceed `1.0`.
-The preview and six-digit hex value are necessarily display-limited.
+## Readouts and hex entry
 
-Hex entry retains the reference picker's profile-specific meaning:
+Always show actual canonical linear ACEScg, which can exceed 1. Displayed
+snapped coordinates are the coordinates sent to evaluation. The visible
+six-digit hex field is sRGB-transfer encoded scene-linear AP1, not display RGB.
+Copy copies those six digits. Set validates exactly six hex digits, decodes
+AP1, applies the fixed forward HDR P3 view, and solves authoring coordinates.
+Those solved coordinates determine subsequent calculation; do not keep a
+hidden imported color that disagrees with the controls.
 
-- direct mode uses sRGB-transfer-encoded Rec.709;
-- ACES modes use sRGB-transfer-encoded ACEScg/AP1.
+## Background
 
-`Copy` copies the six digits. `Set` validates exactly six hexadecimal digits,
-decodes the selected workflow's value, and derives normalized coordinates.
+The range element and adjacent number both show **surround J' in normalized
+0..1**, with three decimals. Default is 0.15. Its neutral source RGB is derived
+from `(backgroundJ', 0.5, 0.5)` through the same 2.03 scale, fixed inverse HDR
+P3, and selected forward view as foreground. Background J'=1 is the 1000-nit
+neutral; there is no sRGB-shaped 0..10 UI mapping or above-peak surround state.
 
-## Background surround
+The foreground-matching marker solves the source neutral having the displayed
+J_HK. Snap Background within 0.02 normalized slider-position distance of that
+marker. Neutral foreground and its matching surround must yield identical PNG
+samples in all four views. View switches never modify Background or its marker.
 
-The Background control remains a linear neutral in the selected target
-profile. Its slider may use the reference picker's sRGB-style presentation
-curve for useful low-end travel. The foreground snap marker is the neutral
-whose JHK equals the currently selected normalized J value.
+Keep Background label, number, and slider on one horizontal line, with the
+slider immediately to the label's right. Keep the existing 0.020 normalized
+slider snap band and put the foreground-matching locator at displayed
+foreground J'.
 
-On a profile switch, Background preserves its JHK offset from the foreground.
-If it is at the old foreground marker, it moves to the new profile's marker.
+The preview PNG remains square and is displayed at exactly the height of the
+adjacent ACEScg/linear value/encoded AP1 value/ColorChecker-name stack. Always
+reserve the ColorChecker-name row: use visibility and `aria-hidden`, never
+`display:none` or the HTML hidden state, when no patch name is shown.
+The paired preview/readout row is 110 CSS pixels high; the fixed size prevents
+an asynchronous name or image update from moving the gamut slice underneath a
+two-click desktop pick.
 
-## ColorChecker markers and snapping
+## ColorChecker and snapping
 
-The 18 official post-2014 ColorChecker Lab/D50 measurements remain the source
-of the markers. They are adapted to D65, converted to absolute ACEScg, and
-evaluated for the selected workflow. Each record contains exact normalized J,
-X, and Y coordinates, display color, name, and availability.
+Use the 18 official post-2014 Lab/D50 patch measurements, CAT02-adapted to D65,
+as fixed scene-linear ACEScg anchors. Their fixed HDR-P3 forward values divided
+by 2.03 determine authoring coordinates. Never regenerate them for a view
+switch. Show each patch at its exact x'/y' position with its name when active.
 
-Every patch dot remains visible at its exact X/Y position, including an
-unavailable source preimage. The selected patch name is shown near the preview.
+- The nearest of the 18 patches or neutral cross is a candidate within
+  Euclidean normalized x'/y' distance 0.020. Recompute on each X/Y update.
+- No candidate hysteresis, sticky capture, or separate release radius.
+- Always draw a dim 0.020 ring around each patch and neutral; brighten the
+  active candidate's ring. These are candidate halos, not the narrow snap band.
+- Keep real pointer coordinates separately. Project x'/y' together onto the
+  candidate only within distance 0.005. Release as soon as the real position
+  leaves that band, even while still inside the wider halo.
+- J' snaps independently within 0.005 to the nearest active patch J' or the
+  fixed 100-nit locator. Exact ties prefer the patch.
+- Display and calculate using snapped values; never overwrite real coordinates.
+  Editing J' leaves displayed X/Y unchanged; moving X/Y leaves displayed J'
+  unchanged. Neutral supplies no patch J' or ColorChecker name.
+- The active patch gets an exact J' wheel locator. No snap cross is drawn on
+  the rolling pad. Slice indicators and readouts carry the selection.
 
-Candidate selection and snapping are deliberately separate:
+## Picking controls and responsive layout
 
-- When no candidate is active, the nearest patch within Euclidean normalized
-  X/Y distance `0.060` becomes active.
-- The active candidate remains latched until X/Y leaves distance `0.075`,
-  providing hysteresis between nearby patches.
-- A dim circle of radius `0.060` is drawn around only the active target dot.
-  It represents candidate/locator visibility, not the narrower snap threshold.
-- While a candidate is active, exact locator ticks appear on the J, X, and Y
-  sliders.
-- The slider currently being edited snaps independently when its absolute
-  one-dimensional distance from the corresponding patch coordinate is at most
-  `0.015`.
-- Editing one slider never automatically overwrites either of the other two.
-- There is no viewport cue for the narrow `0.015` snap band.
+Keep a vertical DaVinci-style J' rolling wheel immediately to the left of the
+gamut slice at every viewport width. Its surface is a restrained, flat repeating
+tick texture with no current-value indicator. A separate static ruler to the
+wheel's right carries evenly spaced 0.0..1.0 labels, a white triangle for the
+displayed J', the highlighted 100-nit reference, and the active ColorChecker
+patch locator. Put a three-decimal J' numeric input below the wheel and ruler.
+The complete J' companion control is exactly as tall as the gamut viewport.
+The rolling-pad/rolling-ball UI remains absent, with no Temp/Tint or
+Reset/Store/Recall controls.
 
-Numeric inputs follow the same candidate and per-coordinate snapping rules as
-their corresponding sliders.
+Choose X/Y interaction by pointer type. A mouse keeps the desktop click workflow:
+the first primary click places the point and arms mouse-follow tracking,
+document-level movement follows and clamps to the slice, and the second primary
+click commits. Escape, view changes, or hex imports cancel tracking.
 
-## Rendering, compatibility, and failures
+Touch and pen swipe directly on the gamut slice using relative movement. Contact
+does not jump the point. Normalize subsequent deltas by slice dimensions, smooth
+velocity over 45 ms, and multiply quarter-speed movement by
+min(4, 1 + 3*(1 - exp(-speed/2.5))). Positive horizontal movement raises x';
+upward movement raises y'. Clamp real channels at 0..1, retain the existing
+real/displayed snap projection, and use no inertia. Capture the pointer until
+release/cancel. The slice has no X/Y keyboard adjustment.
 
-Rendering uses local Rust/WASM workers. Expensive work is coalesced to the
-newest animation-frame state. All evaluator, profile-conversion,
-ColorChecker, and row-render responses are checked against their complete
-request state; stale results must not repaint a newer selection.
+The J' wheel texture follows vertical pointer movement one CSS pixel per pointer
+pixel and remains where released. It is a free physical input surface: keyboard,
+numeric-input, and hex-import edits do not rotate it. J' uses the same 45 ms
+smoothed total-pointer-speed acceleration profile as X/Y, multiplying
+`-deltaY / wheelHeight * 0.25` by
+`min(4, 1 + 3*(1 - exp(-speed/2.5)))`. Horizontal movement contributes to
+speed but never directly changes J'; upward movement raises J'. Clamp real J'
+at 0..1 without accumulating endpoint overscroll. The texture keeps following
+raw pointer motion at an endpoint, and the first reversed delta moves J' inward.
 
-Display-P3-capable browsers use tagged Display P3 canvas/CSS output for the P3
-and Rec.2020-limited modes. Rec.709 modes use sRGB. Browsers without Display P3
-canvas support receive explicit sRGB-converted output for every profile.
+For a mouse, the first primary click on the wheel arms document-level tracking
+without changing J'. The wheel then follows mouse movement without a held
+button; the next primary click anywhere confirms, is consumed, and does not
+activate the underlying control. Touch and pen retain direct pointer-captured
+dragging through release or cancellation. Escape, view changes, and hex imports
+cancel active mouse tracking without undoing the current value. Pointer Lock is
+not used.
 
-The official PyOpenColorIO processor built from the checked-in ACES 2.0 OCIO
-configuration is the numerical authority for ACES profile behavior. The Rust
-implementation is the browser system under test and must remain parity-tested
-against that independent oracle; it is not itself an authoritative reference.
-The fixed-function equations and reach/cusp payloads are transcribed from the
-official OCIO-generated processor shader. The OCIO group composition is also
-preserved: ACEScg-to-ACES2065-1 matrix values reach the fixed function without
-an intermediate range clamp, while the target RGB range is clamped before the
-final XYZ matrix.
+While snapped, the texture continues to follow raw pointer movement; the ruler
+triangle, numeric input, ARIA value, calculation, and images use
+displayed/snapped J'. The separate real value is retained for accelerated wheel
+motion and natural snap escape. Home/End/arrows and focus treatment remain.
 
-A failed or malformed asynchronous response preserves the last accepted
-raster and preview. Loading, invalid, and unavailable states must be conveyed
-with semantics or geometry in addition to color.
+J' snaps within 0.005 of the fixed reference-white J' or the currently active
+x'/y' ColorChecker patch J'. Choose the nearer target and prefer the patch on
+an exact tie. The numeric input uses range 0..1 and step 0.001, displays three
+decimals when committed or updated by another control, and follows the same
+real/displayed snap projection.
 
-## Responsive and accessible behavior
+On narrow screens the wheel-plus-slice stage comes first and the preview/details
+and Background occupy the row below it. The slice shrinks flexibly to make room
+for the wheel. At 360 by 645 CSS pixels with DPR 3, all controls, readouts, and
+footer must remain visible without vertical or horizontal page scrolling,
+clipping, or row overlap. Both axes are non-scrolling at every viewport size.
+The menu remains fixed-positioned to avoid clipping by the mobile layout.
 
-The page has no card stack or visible title block. On desktop the viewport and
-preview occupy the upper workspace with compact controls below. On narrow or
-short screens they reflow or scroll without horizontal overflow.
+## Numerical authority and maintenance
 
-All controls have labels, numeric inputs, keyboard behavior, accessible names,
-and visible focus indicators. The raster canvas has an accessible name; the
-indicator canvas is decorative.
+Python PyOpenColorIO with the checked-in official ACES 2.0 OCIO configuration
+is the ACES reference. Rust/WASM is the implementation under test, never its
+own oracle. Independent NumPy appearance equations verify the new J scale and
+source XYZ; LittleCMS independently validates the embedded SDR ICC profiles.
 
-## Invariants
-
-- Keep profile IDs, order, and labels stable.
-- Keep raw normalized controls separate from derived JHK/polar values.
-- Preserve actual linear ACEScg across ACES profile changes.
-- Keep the direct Rec.709 bridge explicit.
-- Never reject a color only because a positive target-gamut channel exceeds
-  `1.0`.
-- Never accept a negative target-gamut channel through display clipping.
-- Never publish NaN control coordinates.
-- Keep ColorChecker candidate selection, visible halo, and per-slider snapping
-  as distinct behaviors.
-- Keep the project buildable without sibling repository paths.
+Preserve official OCIO group order: ACEScg to ACES2065-1, ACES 2.0 view, then
+output XYZ. Do not pre-clamp negative AP0 matrix values. Interpret view output
+XYZ in 100-nit units. Legacy polar and profile-local normalized Rust exports
+may remain for regression tests, but the browser imports only picker_* APIs.

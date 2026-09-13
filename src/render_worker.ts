@@ -1,208 +1,127 @@
-// The generated wasm-bindgen package is created by `npm run build:wasm`.
-// Every worker owns one WASM instance so requests remain independent.
-// @ts-ignore generated module is absent until the WASM build runs.
+// Each worker owns an independent WASM instance. Evaluation has its own worker.
 import init, {
-  colorchecker_points_normalized,
-  evaluate_normalized,
-  normalized_coordinates_from_acescg,
-  normalized_coordinates_from_encoded,
-  convert_normalized_profile,
-  convert_normalized_background,
-  render_rows_normalized,
+  picker_colorchecker, picker_evaluate, picker_from_encoded, picker_render_linear_rows,
+  picker_gpu_parameters,
 } from "./wasm/pkg/modcam16_color_core.js";
+import { encodeLinearRgbaPng, encodePreview, type ViewId } from "./preview_png";
+import { SliceWebGpuRenderer } from "./slice_webgpu";
 
 type RenderMessage = {
-  kind: "render";
-  id: number;
-  profile: number;
-  j: number;
-  width: number;
-  height: number;
-  yStart: number;
-  yEnd: number;
-  displayP3: boolean;
+  kind: "render"; id: number; profile: ViewId; j: number;
+  width: number; height: number;
 };
 type EvaluateMessage = {
-  kind: "evaluate";
-  id: number;
-  profile: number;
-  j: number;
-  saturationX: number;
-  saturationY: number;
-  background: number;
+  kind: "evaluate"; id: number; profile: ViewId; j: number;
+  fittedRadiusX: number; fittedRadiusY: number; backgroundJ: number;
 };
-type ColorCheckerMessage = {
-  kind: "colorchecker";
-  id: number;
-  profile: number;
-};
-type SetMessage = {
-  kind: "set";
-  id: number;
-  profile: number;
-  red: number;
-  green: number;
-  blue: number;
-  acescg: boolean;
-  sourceProfile?: number;
-  linear?: boolean;
-  sourceJ?: number;
-  background?: number;
-};
-type CancelRenderMessage = { kind: "cancel-render"; id: number };
-type Message =
-  | RenderMessage
-  | EvaluateMessage
-  | ColorCheckerMessage
-  | SetMessage
-  | CancelRenderMessage;
-
-let ready: Promise<void> | undefined;
-let latestRenderId = -1;
-let latestEvaluateId = -1;
-let latestColorcheckerId = -1;
-let latestSetId = -1;
+type Message = RenderMessage | EvaluateMessage
+  | { kind: "colorchecker"; id: number; profile: number }
+  | { kind: "set"; id: number; profile: number; red: number; green: number; blue: number }
+  | { kind: "cancel-render"; id: number };
 
 const workerScope = self as unknown as {
   onmessage: ((event: MessageEvent<Message>) => void) | null;
   postMessage(message: unknown, transfer?: Transferable[]): void;
 };
+const ready = init();
+const latest = new Map<string, number>();
+let pendingEvaluation: EvaluateMessage | undefined;
+let evaluationQueued = false;
+const gpuSlice = new SliceWebGpuRenderer();
+const FULL_SLICE = 512;
+let gpuParameters: Float32Array | undefined;
+let cachedSlice: { key: string; pixels: Float32Array; renderer: "webgpu" | "wasm" } | undefined;
+let pendingRender: RenderMessage | undefined;
+let renderQueued = false;
 
-function ensureReady(): Promise<void> {
-  ready ??= init().then(() => undefined);
-  return ready;
+function viewIndex(view: ViewId) {
+  return view === 0 ? 0 : view === 1 ? 1 : view === 2 ? 2 : 3;
 }
 
-function reportError(message: Message) {
-  workerScope.postMessage({
-    kind: "worker-error",
-    id: "id" in message ? message.id : -1,
-    operation: message.kind,
-    profile: "profile" in message ? message.profile : undefined,
-  });
+async function renderSlice(message: RenderMessage) {
+  await ready;
+  if (latest.get("render") !== message.id) return;
+  const baseKey = `${message.profile}:${message.j.toFixed(12)}:${message.width}:${message.height}`;
+  let pixels = cachedSlice?.key === baseKey ? cachedSlice.pixels : undefined;
+  let renderer: "webgpu" | "wasm" = cachedSlice?.key === baseKey ? cachedSlice.renderer : "wasm";
+  if (!pixels) {
+    // A low-resolution request is specifically the CPU/WASM interaction path.
+    // Never confirm or invoke WebGPU with a 64x64 slice: once WebGPU succeeds,
+    // the main thread permanently requests full-resolution interaction frames.
+    if (message.width === FULL_SLICE && message.height === FULL_SLICE && gpuSlice.available) {
+      try {
+        gpuParameters ??= picker_gpu_parameters();
+        pixels = await gpuSlice.render(gpuParameters, viewIndex(message.profile), message.j, message.width, message.height);
+        renderer = "webgpu";
+      } catch {
+        pixels = picker_render_linear_rows(message.profile, message.j, message.width, message.height, 0, message.height);
+      }
+    } else {
+      pixels = picker_render_linear_rows(message.profile, message.j, message.width, message.height, 0, message.height);
+    }
+    cachedSlice = { key: baseKey, pixels, renderer };
+  }
+  if (latest.get("render") !== message.id) return;
+  const png = encodeLinearRgbaPng(message.profile, message.width, message.height, pixels);
+  workerScope.postMessage({ ...message, kind: "slice", renderer, png }, [png.buffer]);
 }
 
-workerScope.onmessage = (event: MessageEvent<Message>) => {
-  const message = event.data;
+async function renderLatest() {
+  renderQueued = true;
+  while (pendingRender) {
+    const message = pendingRender;
+    pendingRender = undefined;
+    try { await renderSlice(message); }
+    catch { reportError(message); }
+  }
+  renderQueued = false;
+}
+
+function reportError(message: Message, operation: string = message.kind) {
+  workerScope.postMessage({ kind: "worker-error", id: message.id, operation,
+    profile: "profile" in message ? message.profile : undefined });
+}
+
+async function evaluateLatest() {
+  evaluationQueued = false;
+  const message = pendingEvaluation;
+  if (!message) return;
+  pendingEvaluation = undefined;
+  try {
+    await ready;
+    if (latest.get("evaluate") !== message.id) return;
+    const values = picker_evaluate(message.profile, message.j, message.fittedRadiusX, message.fittedRadiusY, message.backgroundJ);
+    workerScope.postMessage({ ...message, values });
+    try {
+      const png = encodePreview(message.profile, values.slice(26, 29), values.slice(29, 32), values[0] > 0.5);
+      workerScope.postMessage({ ...message, kind: "preview", valid: values[0] > 0.5, png }, [png.buffer]);
+    } catch { reportError(message, "preview"); }
+  } catch { reportError(message); }
+}
+
+workerScope.onmessage = ({ data: message }) => {
   if (message.kind === "cancel-render") {
-    latestRenderId = Math.max(latestRenderId, message.id);
+    latest.set("render", Math.max(latest.get("render") ?? -1, message.id + 1));
     return;
   }
-  if (message.kind === "render")
-    latestRenderId = Math.max(latestRenderId, message.id);
-  if (message.kind === "evaluate")
-    latestEvaluateId = Math.max(latestEvaluateId, message.id);
-  if (message.kind === "colorchecker")
-    latestColorcheckerId = Math.max(latestColorcheckerId, message.id);
-  if (message.kind === "set") latestSetId = Math.max(latestSetId, message.id);
-
-  void ensureReady()
-    .then(() => {
-      if (message.kind === "render") {
-        if (message.id !== latestRenderId) return;
-        const pixels = render_rows_normalized(
-          message.profile,
-          message.j,
-          message.width,
-          message.height,
-          message.yStart,
-          message.yEnd,
-          message.displayP3,
-        );
-        workerScope.postMessage(
-          {
-            kind: "render",
-            id: message.id,
-            profile: message.profile,
-            width: message.width,
-            height: message.height,
-            yStart: message.yStart,
-            pixels,
-          },
-          [pixels.buffer as ArrayBuffer],
-        );
-        return;
-      }
-      if (message.kind === "evaluate") {
-        if (message.id !== latestEvaluateId) return;
-        const values = evaluate_normalized(
-          message.profile,
-          message.j,
-          message.saturationX,
-          message.saturationY,
-          message.background,
-        );
-        workerScope.postMessage({
-          kind: "evaluate",
-          id: message.id,
-          profile: message.profile,
-          j: message.j,
-          saturationX: message.saturationX,
-          saturationY: message.saturationY,
-          background: message.background,
-          values,
-        });
-        return;
-      }
-      if (message.kind === "colorchecker") {
-        if (message.id !== latestColorcheckerId) return;
-        workerScope.postMessage({
-          kind: "colorchecker",
-          id: message.id,
-          profile: message.profile,
-          points: colorchecker_points_normalized(message.profile),
-        });
-        return;
-      }
-      if (message.kind === "set") {
-        if (message.id !== latestSetId) return;
-        const values =
-          message.linear && message.sourceProfile !== undefined
-            ? convert_normalized_profile(
-                message.sourceProfile,
-                message.profile,
-                message.red,
-                message.green,
-                message.blue,
-              )
-            : message.acescg
-              ? normalized_coordinates_from_acescg(
-                  message.profile,
-                  message.red,
-                  message.green,
-                  message.blue,
-                )
-              : normalized_coordinates_from_encoded(
-                  message.profile,
-                  message.red,
-                  message.green,
-                  message.blue,
-                );
-        const convertedBackground =
-          message.linear &&
-          message.sourceProfile !== undefined &&
-          message.sourceJ !== undefined &&
-          message.background !== undefined &&
-          values.length >= 2
-            ? convert_normalized_background(
-                message.sourceProfile,
-                message.profile,
-                message.background,
-                message.sourceJ,
-                values[1],
-              )
-            : undefined;
-        workerScope.postMessage({
-          kind: "set",
-          id: message.id,
-          profile: message.profile,
-          values,
-          background: convertedBackground?.[1],
-          backgroundPreserved: convertedBackground
-            ? convertedBackground[0] > 0.5
-            : false,
-        });
-      }
-    })
-    .catch(() => reportError(message));
+  latest.set(message.kind, message.id);
+  if (message.kind === "evaluate") {
+    pendingEvaluation = message;
+    if (!evaluationQueued) {
+      evaluationQueued = true;
+      setTimeout(() => void evaluateLatest(), 0);
+    }
+    return;
+  }
+  void ready.then(() => {
+    if (latest.get(message.kind) !== message.id) return;
+    if (message.kind === "render") {
+      pendingRender = message;
+      if (!renderQueued) void renderLatest();
+    } else if (message.kind === "colorchecker") {
+      workerScope.postMessage({ ...message, points: picker_colorchecker() });
+    } else if (message.kind === "set") {
+      workerScope.postMessage({ ...message, values: picker_from_encoded(message.red, message.green, message.blue) });
+    }
+  }).catch(() => reportError(message));
 };

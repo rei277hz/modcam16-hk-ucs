@@ -10,6 +10,7 @@
 //! default ``AppearanceConfig``.
 
 pub mod aces_output;
+mod picker;
 
 use wasm_bindgen::prelude::*;
 
@@ -23,7 +24,7 @@ const SURROUND_N_C: f64 = 0.8;
 // the Rec.709 100-nit inverse-view bridge (neutral sRGB 0.5 maps to about
 // 1.169 ACEScg).
 const REFLECTANCE_MAX: f64 = 1.2;
-const BACKGROUND_MAX: f64 = 1.2;
+const BACKGROUND_MAX: f64 = 1.0;
 
 const CAT16: [[f64; 3]; 3] = [
     [0.401288, 0.650173, -0.051461],
@@ -481,30 +482,38 @@ fn unit_cube_valid(value: [f64; 3]) -> bool {
 // Normalized Painter-channel JHK API. These constants are shared with the
 // modCAM16-HK view shader and intentionally live beside the f64 reference
 // implementation so browser controls and shader-authored values agree.
-const J_HK_HDR_1000: f64 = 360.4750768691868;
-const J_HK_CODE_REFERENCE: f64 = 0.3679404256722582;
-const J_HK_SDR_SCALE: f64 = 100.0 / J_HK_CODE_REFERENCE;
-const SATURATION_K: f64 = 66.0;
+const J_HK_PEAK: f64 = 183.7488220212894;
+const FITTED_RADIUS_K: f64 = 6.900502700352508;
+const FITTED_RADIUS_D: f64 = 3.185803578575629;
 
-fn normalized_j_scale(profile: u32) -> f64 {
+fn normalized_j_scale(_profile: u32) -> f64 {
+    J_HK_PEAK
+}
+
+fn normalized_xyz_scale(profile: u32) -> f64 {
     if profile == 0 || profile == 2 {
-        J_HK_HDR_1000
+        2.03
     } else {
-        J_HK_SDR_SCALE
+        1.0
     }
 }
 
-fn normalized_model(profile: u32) -> Model {
+fn normalized_model(_profile: u32) -> Model {
     let mut model = model();
-    model.cam_z = if profile == 0 || profile == 2 {
-        1.48 + (20.0_f64 / 203.0).sqrt()
-    } else {
-        1.48 + 0.2_f64.sqrt()
-    };
+    // Match the Painter shader's common D65/203-nit context for every
+    // normalized profile. These explicit constants avoid inheriting the
+    // legacy 20-nit model used by the polar picker.
+    model.cam_f_l = 0.46646834500532247;
+    model.cam_a_w = 31.7941491565276;
+    model.cam_z = 1.48 + 0.10_f64.sqrt();
     model
 }
 
 fn decode_normalized_jhk(profile: u32, code: [f64; 3]) -> Option<(f64, f64, f64)> {
+    decode_scaled_jhk(code, normalized_j_scale(profile))
+}
+
+fn decode_scaled_jhk(code: [f64; 3], j_scale: f64) -> Option<(f64, f64, f64)> {
     if !finite3(code)
         || code[0] < 0.0
         || code[0] > 1.0
@@ -515,41 +524,75 @@ fn decode_normalized_jhk(profile: u32, code: [f64; 3]) -> Option<(f64, f64, f64)
     {
         return None;
     }
-    let u = 2.0 * code[1] - 1.0;
-    let v = 2.0 * code[2] - 1.0;
-    let saturation = u.hypot(v);
-    if saturation > 1.0 + 1.0e-12 {
+    let x = 2.0 * code[1] - 1.0;
+    let y = 2.0 * code[2] - 1.0;
+    let radius = x.hypot(y);
+    if !radius.is_finite() || radius > 1.0 + 1.0e-12 {
         return None;
     }
-    let hue = v.atan2(u).to_degrees().rem_euclid(360.0);
-    Some((code[0] * normalized_j_scale(profile), saturation, hue))
+    let saturation = FITTED_RADIUS_K * FITTED_RADIUS_D.mul_add(radius, 0.0).exp_m1();
+    let h = code[0] * j_scale;
+    let u = (0.007 / SURROUND_C) * saturation;
+    let denominator = h.hypot(33.0 * u) + 33.0 * u;
+    let j_a = if denominator > 0.0 {
+        h * h / denominator
+    } else {
+        0.0
+    };
+    let chroma = u * j_a;
+    if !h.is_finite()
+        || !saturation.is_finite()
+        || !j_a.is_finite()
+        || !chroma.is_finite()
+        || chroma < 0.0
+        || HK_COEFFICIENT * chroma > h * h + 1.0e-10
+    {
+        return None;
+    }
+    // Painter channels use `(x, y) = (-R(s) sin(h), R(s) cos(h))`.
+    let hue = (-x).atan2(y).to_degrees().rem_euclid(360.0);
+    Some((h, chroma, hue))
 }
 
 fn normalized_jhk_from_xyz(profile: u32, xyz: [f64; 3]) -> ([f64; 3], bool) {
-    let (_, chroma, hue, j_hk) = attributes(normalized_model(profile), xyz);
-    let scale = normalized_j_scale(profile);
-    let raw_saturation = if j_hk > 0.0 && chroma.is_finite() {
-        (SATURATION_K * chroma / (j_hk * j_hk)).max(0.0)
+    let model_xyz = xyz.map(|channel| channel / normalized_xyz_scale(profile));
+    scaled_jhk_from_xyz(model_xyz, normalized_j_scale(profile))
+}
+
+fn scaled_jhk_from_xyz(model_xyz: [f64; 3], scale: f64) -> ([f64; 3], bool) {
+    let (_, chroma, hue, j_hk) = attributes(normalized_model(2), model_xyz);
+    let j_a = (j_hk * j_hk - HK_COEFFICIENT * chroma).max(0.0).sqrt();
+    let raw_saturation = if j_a > 0.0 && chroma.is_finite() {
+        (SURROUND_C * chroma / (0.007 * j_a)).max(0.0)
     } else {
         0.0
     };
     let raw_j = j_hk / scale;
-    let saturation = raw_saturation.clamp(0.0, 1.0);
+    let raw_radius = if raw_saturation.is_finite() {
+        (1.0 + raw_saturation / FITTED_RADIUS_K).ln() / FITTED_RADIUS_D
+    } else {
+        f64::NAN
+    };
+    let radius = raw_radius.clamp(0.0, 1.0);
     let radians = hue.to_radians();
     let code = [
         raw_j.clamp(0.0, 1.0),
-        0.5 + 0.5 * saturation * radians.cos(),
-        0.5 + 0.5 * saturation * radians.sin(),
+        0.5 - 0.5 * radius * radians.sin(),
+        0.5 + 0.5 * radius * radians.cos(),
     ];
     let valid = raw_j.is_finite()
         && (0.0..=1.0).contains(&raw_j)
         && raw_saturation.is_finite()
-        && raw_saturation <= 1.0 + 1.0e-10;
+        && raw_saturation >= 0.0
+        && chroma.is_finite()
+        && chroma >= -1.0e-10
+        && raw_radius.is_finite()
+        && raw_radius <= 1.0 + 1.0e-10;
     (code, valid)
 }
 
 fn normalized_sample(profile: u32, code: [f64; 3]) -> Sample {
-    let Some((j_hk, saturation, hue)) = decode_normalized_jhk(profile, code) else {
+    let Some((j_hk, chroma, hue)) = decode_normalized_jhk(profile, code) else {
         return Sample {
             xyz: [f64::NAN; 3],
             source_rgb: [f64::NAN; 3],
@@ -558,8 +601,9 @@ fn normalized_sample(profile: u32, code: [f64; 3]) -> Sample {
         };
     };
     let model = normalized_model(profile);
-    let chroma = saturation * j_hk * j_hk / SATURATION_K;
-    let xyz = modcam_to_xyz(model, j_hk, chroma, hue);
+    let mut xyz = modcam_to_xyz(model, j_hk, chroma, hue);
+    let xyz_scale = normalized_xyz_scale(profile);
+    xyz = xyz.map(|channel| channel * xyz_scale);
     let acescg = transform_to_acescg(profile, xyz);
     let source_rgb = xyz_to_source(profile, xyz);
     let source_valid = normalized_cone_valid(profile, source_rgb, xyz);
@@ -589,7 +633,10 @@ fn encode_extended_rgb(value: [f64; 3]) -> [f64; 3] {
 fn normalized_coordinates_from_xyz(profile: u32, xyz: [f64; 3]) -> Vec<f64> {
     let (code, domain_valid) = normalized_jhk_from_xyz(profile, xyz);
     let source = xyz_to_source(profile, xyz);
-    let attrs = attributes(normalized_model(profile), xyz);
+    let attrs = attributes(
+        normalized_model(profile),
+        xyz.map(|channel| channel / normalized_xyz_scale(profile)),
+    );
     let valid = finite3(xyz)
         && normalized_cone_valid(profile, source, xyz)
         && code.iter().all(|v| v.is_finite())
@@ -598,7 +645,7 @@ fn normalized_coordinates_from_xyz(profile: u32, xyz: [f64; 3]) -> Vec<f64> {
     vec![if valid { 1.0 } else { 0.0 }, code[0], code[1], code[2]]
 }
 
-/// Evaluate normalized `(J_HK, saturation-x, saturation-y)` controls.
+/// Evaluate normalized `(J_HK, fitted-radius-x, fitted-radius-y)` controls.
 /// Layout: `[valid, linear0..2, displayP3 RGB, display-sRGB RGB,
 /// encoded-linear RGB, backgroundDisplayP3 RGB, backgroundDisplaySrgb RGB,
 /// backgroundNeutral, j, x, y]`.
@@ -606,11 +653,11 @@ fn normalized_coordinates_from_xyz(profile: u32, xyz: [f64; 3]) -> Vec<f64> {
 pub fn evaluate_normalized(
     profile: u32,
     j: f64,
-    saturation_x: f64,
-    saturation_y: f64,
+    fitted_radius_x: f64,
+    fitted_radius_y: f64,
     background: f64,
 ) -> Vec<f64> {
-    let code = [j, saturation_x, saturation_y];
+    let code = [j, fitted_radius_x, fitted_radius_y];
     let result = normalized_sample(profile, code);
     let background_value = if background.is_finite() {
         background.clamp(0.0, BACKGROUND_MAX)
@@ -653,8 +700,8 @@ pub fn evaluate_normalized(
         background_srgb[2],
         background_neutral,
         j,
-        saturation_x,
-        saturation_y,
+        fitted_radius_x,
+        fitted_radius_y,
     ];
     if !result.valid {
         out[0] = 0.0;
@@ -2813,22 +2860,15 @@ mod tests {
 
     #[test]
     fn normalized_j_anchors_match_the_painter_shader() {
-        for profile in [0, 2] {
-            assert_eq!(normalized_j_scale(profile), J_HK_HDR_1000);
-            assert!(
-                (normalized_model(profile).cam_z - (1.48 + (20.0_f64 / 203.0).sqrt())).abs()
-                    < 1.0e-15
-            );
+        for profile in [0, 1, 2, 3, 4] {
+            assert_eq!(normalized_j_scale(profile), J_HK_PEAK);
+            assert!((normalized_model(profile).cam_z - (1.48 + 0.10_f64.sqrt())).abs() < 1.0e-15);
         }
-        for profile in [1, 3, 4] {
-            assert_eq!(normalized_j_scale(profile), J_HK_SDR_SCALE);
-            assert!((normalized_model(profile).cam_z - (1.48 + 0.2_f64.sqrt())).abs() < 1.0e-15);
-        }
-        assert!((J_HK_SDR_SCALE - 271.7831285249278).abs() < 1.0e-10);
+        assert!((100.0 / J_HK_PEAK - 0.5442211759507979).abs() < 1.0e-15);
     }
 
     #[test]
-    fn normalized_xy_round_trips_and_stays_fixed_as_j_changes() {
+    fn normalized_fitted_radius_round_trips_and_stays_fixed_as_j_changes() {
         for profile in [0, 1, 2, 3, 4] {
             for j in [0.15, 0.35, 0.7] {
                 let expected = [j, 0.54, 0.47];
@@ -2839,6 +2879,46 @@ mod tests {
                     assert!((actual[index] - expected[index]).abs() < 2.0e-7);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn normalized_fitted_radius_matches_shader_encoding() {
+        let code = [0.3, 0.57, 0.46];
+        let (j_hk, chroma, hue) = decode_normalized_jhk(3, code).expect("valid fitted radius");
+        let radius = (2.0 * code[1] - 1.0).hypot(2.0 * code[2] - 1.0);
+        let saturation = FITTED_RADIUS_K * (FITTED_RADIUS_D * radius).exp_m1();
+        let u = (0.007 / SURROUND_C) * saturation;
+        let expected_j_a = j_hk * j_hk / (j_hk.hypot(33.0 * u) + 33.0 * u);
+        assert!((chroma - u * expected_j_a).abs() < 1.0e-12);
+        assert!(
+            (hue - (-(2.0 * code[1] - 1.0))
+                .atan2(2.0 * code[2] - 1.0)
+                .to_degrees()
+                .rem_euclid(360.0))
+            .abs()
+                < 1.0e-12
+        );
+
+        let sample = normalized_sample(3, code);
+        assert!(sample.valid);
+        let (encoded, valid) = normalized_jhk_from_xyz(3, sample.xyz);
+        assert!(valid);
+        for index in 0..3 {
+            assert!(
+                (encoded[index] - code[index]).abs() < 2.0e-7,
+                "channel={index}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalized_hdr_xyz_scale_matches_shader_reference_scale() {
+        let code = [0.3, 0.54, 0.47];
+        let sdr = normalized_sample(1, code);
+        let hdr = normalized_sample(2, code);
+        for channel in 0..3 {
+            assert!((hdr.xyz[channel] - 2.03 * sdr.xyz[channel]).abs() < 1.0e-12);
         }
     }
 
