@@ -1,0 +1,72 @@
+{
+  "version": "2.0",
+  "lut": "whitepoint_cct_duv_lut.exr",
+  "width": 257,
+  "height": 257,
+  "sample_type": "FLOAT (32-bit)",
+  "compression": {
+    "name": "ZIP16",
+    "openexr_constant": "ZIP_COMPRESSION",
+    "scanlines_per_block": 16
+  },
+  "payload": {
+    "R": "u - D65_white_u, CIE 1960 UCS",
+    "G": "v - D65_white_v, CIE 1960 UCS",
+    "B": "reserved zero"
+  },
+  "color_interpretation": "raw data; no gamma, gamut conversion, or color management",
+  "import_orientation": "canonical OpenEXR scanline order; Painter GPU rows are vertically reversed and compensated in the shader",
+  "orientation": "R increases from higher-temperature/cooler to lower-temperature/warmer for UI intuition; G increases toward green and decreases toward magenta",
+  "orientation_reason": "A higher red paint value conventionally reads as warmer, and the green axis is explicitly reversed so higher G reads as greener and lower G as more magenta.",
+  "coordinate_mapping": "spectral Planck integration, fixed-Duv CIE 1960 uv arc length, common symmetric span",
+  "adaptation": "CAT16 from selected display D65 white to the LUT target white, applied before each ACES inverse",
+  "reference_white_xy": [
+    0.3127,
+    0.329
+  ],
+  "reference_white_uv": [
+    0.1978300066428368,
+    0.312213329959194
+  ],
+  "reference_white_XYZ_Y1": [
+    0.9504559270516716,
+    1.0,
+    1.0890577507598787
+  ],
+  "center_payload": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "metadata": {
+    "size": 257,
+    "temperature_min": 2000.0,
+    "temperature_max": 20000.0,
+    "reference_temperature": 6504.357370646914,
+    "reference_duv": -0.0032070939629302913,
+    "duv_half_range": 0.02,
+    "symmetric_arc": 0.03205283826869659,
+    "reference_u": 0.1978300066428368,
+    "reference_v": 0.312213329959194,
+    "observer_md5": "17cca777db64b17170f06f67ce9d3ab7",
+    "planck_c2_mK": 0.014388,
+    "minimum_target_XYZ": [
+      0.8362351004764877,
+      1.0,
+      0.46712520358131937
+    ]
+  },
+  "sha256": {
+    "whitepoint_cct_duv_lut.exr": "59e063a3ecf088cb5939c80fc98e48e5d0275a9b5237a8a7dadb2469f1ab88f9"
+  },
+  "generator": "source/generate_whitepoint_lut.py",
+  "observer_data": "source/CIE_xyz_1931_2deg.csv",
+  "observer_metadata": "source/CIE_xyz_1931_2deg.csv_metadata.json",
+  "sources": [
+    "https://cie.co.at/datatable/cie-1931-colour-matching-functions-2-degree-observer",
+    "https://www.nist.gov/publications/practical-use-and-calculation-cct-and-duv",
+    "https://docs.acescentral.com/encodings/acescg/",
+    "https://docs.acescentral.com/white-point/",
+    "https://adobedocs.github.io/painter-shader-api/api/parameters/all-custom-params/"
+  ]
+}

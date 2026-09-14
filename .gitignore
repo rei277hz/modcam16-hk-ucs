@@ -4,5 +4,8 @@ src/wasm/pkg/
 src/wasm/color_core/target/
 *.log
 .DS_Store
+
+# Release-source Python generator and validation caches.
+substance-3d-painter/source/__pycache__/
 __pycache__/
 *.pyc
