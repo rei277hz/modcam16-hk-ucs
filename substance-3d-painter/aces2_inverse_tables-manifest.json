@@ -1,0 +1,68 @@
+{
+  "version": "2.0",
+  "lut": "aces2_inverse_tables.exr",
+  "width": 363,
+  "height": 12,
+  "sample_type": "FLOAT (32-bit)",
+  "compression": {
+    "name": "ZIP16",
+    "openexr_constant": "ZIP_COMPRESSION",
+    "scanlines_per_block": 16
+  },
+  "orientation": {
+    "payload": "canonical OpenEXR scanline order",
+    "painter_gpu_rows": "vertically reversed on import",
+    "shader_compensation": "logical row y maps to physical row 11-y"
+  },
+  "payload_layout": {
+    "rows": "each profile uses consecutive reach, cusp, and hue rows",
+    "reach": "R channel of the first row; 363 samples",
+    "cusp": "RGB values of the second row; 363 samples",
+    "hues": "R channel of the third row; 363 samples including sentinel endpoints",
+    "unused_channels": "zero-filled"
+  },
+  "rows": [
+    "Rec.2020 HDR reach/cusp/hues",
+    "P3-D65 HDR reach/cusp/hues",
+    "P3-D65 SDR reach/cusp/hues",
+    "Rec.709 SDR reach/cusp/hues"
+  ],
+  "acquisition": {
+    "method": "PyOpenColorIO GPUProcessor.extractGpuShaderInfo with a GLSL 4.0 descriptor",
+    "oracle": "PyOpenColorIO CPUProcessor for the matching official ACES 2.0 inverse BuiltinTransform",
+    "configuration": "source/cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio",
+    "configuration_sha256": "9e3ec773a7fbc0bb6666e428dedd8ccec4f59b8b6d40506c825cc7a8c02ff2ff",
+    "ocio_profile_version": "2.5",
+    "aces_config": "ACES v4.0.0 CG configuration with ACES v2.0 output transforms",
+    "upstream": "https://github.com/AcademySoftwareFoundation/OpenColorIO-Config-ACES",
+    "notes": "Reach and cusp values come from OCIO GPU textures; hue sentinels come from the generated OCIO shader text."
+  },
+  "profiles": [
+    {
+      "id": "rec2020_hdr",
+      "view": "ACES 2.0 - HDR 1000 nits (Rec.2020)",
+      "inverse_transform": "ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - HDR-1000nit-REC2020_2.0",
+      "rows": "0=reach, 1=cusp, 2=hues"
+    },
+    {
+      "id": "p3_hdr",
+      "view": "ACES 2.0 - HDR 1000 nits (P3 D65)",
+      "inverse_transform": "ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - HDR-1000nit-P3-D65_2.0",
+      "rows": "3=reach, 4=cusp, 5=hues"
+    },
+    {
+      "id": "p3_sdr",
+      "view": "ACES 2.0 - SDR 100 nits (P3 D65)",
+      "inverse_transform": "ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0",
+      "rows": "6=reach, 7=cusp, 8=hues"
+    },
+    {
+      "id": "rec709_sdr",
+      "view": "ACES 2.0 - SDR 100 nits (Rec.709)",
+      "inverse_transform": "ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-REC709_2.0",
+      "rows": "9=reach, 10=cusp, 11=hues"
+    }
+  ],
+  "generator": "source/generate_aces_tables.py",
+  "sha256": "7abdf93229da5ea1e768302b5da891ad861510c221776ec039c0e103d856f7d7"
+}

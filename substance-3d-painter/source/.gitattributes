@@ -1,0 +1,5 @@
+# Preserve the published observer files byte-for-byte for checksum validation.
+CIE_xyz_1931_2deg.csv -text -diff
+CIE_xyz_1931_2deg.csv_metadata.json -text -diff
+# Preserve the published OCIO configuration byte-for-byte for provenance and checksum validation.
+cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio -text -diff

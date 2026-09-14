@@ -1,0 +1,8 @@
+# Numerical LUT generation and release validation.
+numpy>=2.0
+scipy>=1.13
+OpenEXR>=3.2
+moderngl>=5.10
+
+# Provides the PyOpenColorIO Python module used by the ACES tooling.
+opencolorio>=2.5,<2.6
