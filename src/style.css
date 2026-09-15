@@ -140,6 +140,7 @@ select {
 }
 #image-preview { image-rendering: auto; }
 #gamut-slice,
+#gamut-colorchecker,
 #preview-image,
 #image-preview,
 #image-loupe,
@@ -222,11 +223,27 @@ select {
 .gamut-stage {
   display: grid;
   grid-template-columns: 82px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   align-items: stretch;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 5px;
   min-width: 0;
   min-height: 0;
 }
+
+.j-wheel-control { grid-column: 1; grid-row: 2; }
+.plot-frame { grid-column: 2; grid-row: 2; }
+.slice-options {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1;
+  gap: 5px;
+  width: min(100%, 512px, max(210px, calc(100dvh - 440px)));
+  min-width: 0;
+}
+.toggle-button { padding-block: 3px; }
+.toggle-button[aria-pressed="true"] { color: #fff; background: #293648; border-color: #71b7ff; }
+.toggle-button:disabled { cursor: default; opacity: .42; }
 
 .plot-frame {
   position: relative;
@@ -255,18 +272,23 @@ select {
   z-index: 1;
 }
 
+#gamut-colorchecker {
+  z-index: 2;
+  pointer-events: none;
+}
+
 #gamut-checkerboard {
   z-index: 0;
 }
 
 #gamut-indicators {
-  z-index: 2;
+  z-index: 3;
   pointer-events: none;
 }
 
 .plot-status {
   position: absolute;
-  z-index: 2;
+  z-index: 4;
   left: 50%;
   bottom: 14px;
   max-width: calc(100% - 28px);
@@ -761,7 +783,7 @@ select,
     height: 100dvh;
     min-height: 0;
     overflow: hidden;
-    padding: 8px 10px 8px;
+    padding: 8px 10px 0;
   }
   .visuals {
     grid-template-columns: minmax(0, 1fr);
@@ -772,7 +794,7 @@ select,
     overflow: hidden;
   }
   .plot-frame {
-    width: min(100%, 512px, max(160px, calc(100dvh - 410px)));
+    width: min(100%, 512px, max(160px, calc(100dvh - 432px)));
     height: auto;
     aspect-ratio: 1;
     justify-self: stretch;

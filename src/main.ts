@@ -21,7 +21,6 @@ import {
 
 const FULL = 512;
 const PREVIEW = 64;
-const SOURCE_PROFILE = 2;
 const INITIAL_J = 0.3;
 const PATCH_NAMES = [
   "Dark Skin",
@@ -50,8 +49,7 @@ type Patch = {
   j: number;
   x: number;
   y: number;
-  p3: [number, number, number];
-  srgb: [number, number, number];
+  color: [number, number, number];
   available: boolean;
 };
 type SnapTarget =
@@ -66,6 +64,8 @@ type RenderResponse = {
   height: number;
   j: number;
   renderer: "webgpu" | "wasm";
+  fullRec2020: boolean;
+  desaturate: boolean;
   png: Uint8Array<ArrayBuffer>;
 };
 type EvaluateResponse = {
@@ -76,6 +76,8 @@ type EvaluateResponse = {
   fittedRadiusX: number;
   fittedRadiusY: number;
   backgroundJ: number;
+  fullRec2020: boolean;
+  desaturate: boolean;
   values: Float64Array;
 };
 type PreviewResponse = Omit<EvaluateResponse, "kind" | "values"> & {
@@ -85,7 +87,9 @@ type ColorCheckerResponse = {
   kind: "colorchecker";
   id: number;
   profile: number;
+  desaturate: boolean;
   points: Float64Array;
+  png: Uint8Array<ArrayBuffer>;
 };
 type SetResponse = {
   kind: "set";
@@ -104,6 +108,7 @@ const $ = <T extends Element>(selector: string) =>
   document.querySelector<T>(selector)!;
 const checkerboard = $("#gamut-checkerboard") as HTMLCanvasElement;
 const gamutSliceImage = $("#gamut-slice") as HTMLImageElement;
+const gamutColorcheckerImage = $("#gamut-colorchecker") as HTMLImageElement;
 const indicators = $("#gamut-indicators") as HTMLCanvasElement;
 const plotFrame = $(".plot-frame") as HTMLElement;
 const plotStatus = $("#plot-status") as HTMLElement;
@@ -145,6 +150,8 @@ const imageOptionsDialog = $("#image-options-dialog") as HTMLDialogElement;
 const imageOptionsClose = $("#image-options-close") as HTMLButtonElement;
 const imageInterpretationWarning = $("#image-interpretation-warning") as HTMLElement;
 const imageZoomButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-image-zoom]"));
+const fullRec2020Toggle = $("#full-rec2020-toggle") as HTMLButtonElement;
+const desaturateToggle = $("#desaturate-toggle") as HTMLButtonElement;
 
 function canvasContext(target: HTMLCanvasElement): CanvasRenderingContext2D {
   try {
@@ -164,12 +171,6 @@ const indicatorContext = canvasContext(indicators);
 // gamut indicators. Safari can otherwise flatten an HDR image stack when an
 // sRGB canvas is composited over its valid PQ image.
 const imageOverlayContext = canvasContext(imageOverlay);
-let displayP3Canvas = false;
-try {
-  displayP3Canvas = indicatorContext.getContextAttributes().colorSpace === "display-p3";
-} catch {
-  displayP3Canvas = false;
-}
 let sliceSize = FULL;
 
 let imageKey = "";
@@ -185,6 +186,8 @@ let currentRender:
       j: number;
       width: number;
       height: number;
+      fullRec2020: boolean;
+      desaturate: boolean;
     }
   | undefined;
 let currentPatches: Patch[] = [];
@@ -222,10 +225,13 @@ let jWheelTextureOffset = 0;
 let jWheelVisualHeight = 0;
 let jWheelSuppressClick = false;
 let sliceTrackingActive = false;
-let selectedView: ViewId = 1;
+let selectedView: ViewId = 0;
+let fullRec2020 = true;
+let desaturate = false;
 let confirmedSliceRenderer: "unknown" | "webgpu" | "wasm" = "unknown";
 let previewUrl: string | undefined;
 let sliceUrl: string | undefined;
+let colorcheckerUrl: string | undefined;
 let pageClosed = false;
 let backgroundSnap: number | null = null;
 let backgroundJ = 0.15;
@@ -244,7 +250,7 @@ let queuedPreview: PreviewResponse | undefined;
 
 const sliceWorker = new Worker(new URL("./render_worker.ts", import.meta.url), { type: "module" });
 const evaluatorWorker = new Worker(new URL("./render_worker.ts", import.meta.url), { type: "module" });
-const checkerWorker = evaluatorWorker;
+const checkerWorker = new Worker(new URL("./render_worker.ts", import.meta.url), { type: "module" });
 type ImageWorkerRequest = {
   kind: "inspect" | "prepare" | "sample" | "preview";
   id: number;
@@ -257,15 +263,16 @@ type ImageWorkerRequest = {
   transfer?: string | null;
   view?: ViewId;
   scale203?: boolean;
+  desaturate?: boolean;
   x?: number;
   y?: number;
   radius?: number;
 };
 type ImageWorkerMessage =
   | { kind: "inspect"; id: number; generation: number; summary: any }
-  | { kind: "ready"; id: number; generation: number; width: number; height: number; previewWidth: number; previewHeight: number; summary: any; png: ArrayBuffer; view: ViewId; scale203: boolean; renderer: "webgpu" | "wasm" }
-  | { kind: "preview"; id: number; generation: number; appearanceToken: number; width: number; height: number; previewWidth: number; previewHeight: number; png: ArrayBuffer; view: ViewId; scale203: boolean; renderer: "webgpu" | "wasm" }
-  | { kind: "sample"; id: number; generation: number; token: number; x: number; y: number; minX: number; minY: number; width: number; height: number; loupe: ArrayBuffer; points: Array<{ j: number; x: number; y: number }>; mean: Code; meanAcescg: [number, number, number]; meanCode: Float64Array; rejected: number; total: number; view: ViewId; scale203: boolean }
+  | { kind: "ready"; id: number; generation: number; width: number; height: number; previewWidth: number; previewHeight: number; summary: any; png: ArrayBuffer; view: ViewId; scale203: boolean; desaturate: boolean; renderer: "webgpu" | "wasm" }
+  | { kind: "preview"; id: number; generation: number; appearanceToken: number; width: number; height: number; previewWidth: number; previewHeight: number; png: ArrayBuffer; view: ViewId; scale203: boolean; desaturate: boolean; renderer: "webgpu" | "wasm" }
+  | { kind: "sample"; id: number; generation: number; token: number; x: number; y: number; minX: number; minY: number; width: number; height: number; loupe: ArrayBuffer; points: Array<{ j: number; x: number; y: number }>; mean: Code; meanAcescg: [number, number, number]; meanCode: Float64Array; rejected: number; total: number; view: ViewId; scale203: boolean; desaturate: boolean }
   | { kind: "error"; id: number; generation?: number; message: string };
 const imageWorker = new Worker(new URL("./image_locator_worker.ts", import.meta.url), { type: "module" });
 let imageRequestId = 0;
@@ -298,7 +305,7 @@ let imagePointerLockFallback = false;
 let imageOptionsFocusPending = false;
 let imageAppearanceToken = 0;
 let pendingImageAppearance:
-  | { token: number; view: ViewId; scale203: boolean; previewReady: boolean; sampleToken?: number; loupeReady: boolean }
+  | { token: number; view: ViewId; scale203: boolean; desaturate: boolean; previewReady: boolean; sampleToken?: number; loupeReady: boolean }
   | undefined;
 
 function finite(value: number, fallback = 0) {
@@ -311,13 +318,14 @@ function currentRealCode(): Code {
   return { ...realCode };
 }
 function currentProfile(): ViewId { return selectedView; }
+function effectiveDesaturate() { return fullRec2020 && desaturate; }
 function requestedSliceSize() {
   return activeAxis === "j" && confirmedSliceRenderer === "wasm"
     ? PREVIEW
     : FULL;
 }
 function stateKey(code = currentCode(), size = requestedSliceSize()) {
-  return `${selectedView}:${size}:${code.j.toFixed(12)}`;
+  return `${selectedView}:${Number(fullRec2020)}:${Number(effectiveDesaturate())}:${size}:${code.j.toFixed(12)}`;
 }
 function formatRgb(values: ArrayLike<number>) {
   return `(${Array.from(values, (value) => (Number.isFinite(value) ? value.toFixed(4) : "nan")).join(", ")})`;
@@ -450,12 +458,6 @@ function drawIndicators() {
   drawCircle(indicatorContext, nx, ny, PATCH_ENTRY_RADIUS * scale, "rgb(245 193 93 / 30%)", 1.5);
   currentPatches.forEach((patch, patchIndex) => {
     const [px, py] = point(patch.x, patch.y);
-    indicatorContext.fillStyle = displayP3Canvas
-      ? `color(display-p3 ${patch.p3.join(" ")})`
-      : `rgb(${patch.srgb.map((v) => Math.round(clamp01(v) * 255)).join(" ")})`;
-    indicatorContext.beginPath();
-    indicatorContext.arc(px, py, 3.5, 0, Math.PI * 2);
-    indicatorContext.fill();
     const active = activeTarget?.kind === "patch" && activeTarget.index === patchIndex;
     drawCircle(indicatorContext, px, py, PATCH_ENTRY_RADIUS * scale,
       active ? "rgb(190 220 255 / 78%)" : "rgb(190 220 255 / 26%)", active ? 2 : 1.5);
@@ -577,11 +579,13 @@ function displayValues(values: Float64Array) {
 }
 function evaluationIsCurrent(response: EvaluateResponse | PreviewResponse) {
   return !pageClosed && response.id === evaluationId && response.profile === selectedView &&
+    response.fullRec2020 === fullRec2020 && response.desaturate === effectiveDesaturate() &&
     response.j === code.j && response.fittedRadiusX === code.x && response.fittedRadiusY === code.y &&
     Math.abs(response.backgroundJ - currentBackgroundJ()) < 1e-12;
 }
 function responseBelongsToCurrentView(response: EvaluateResponse | PreviewResponse) {
-  return !pageClosed && response.profile === selectedView;
+  return !pageClosed && response.profile === selectedView &&
+    response.fullRec2020 === fullRec2020 && response.desaturate === effectiveDesaturate();
 }
 function responseMayAdvanceDuringGesture(response: EvaluateResponse | PreviewResponse) {
   return responseBelongsToCurrentView(response) &&
@@ -651,7 +655,8 @@ async function displaySlice(response: RenderResponse, key: string) {
     const mayAdvanceGesture = activeAxis === "j";
     const exactState = stateKey(currentCode(), response.width) === key;
     const settledSize = requestedSliceSize();
-    if (pageClosed || response.profile !== selectedView ||
+    if (pageClosed || response.profile !== selectedView || response.fullRec2020 !== fullRec2020 ||
+      response.desaturate !== effectiveDesaturate() ||
       (!mayAdvanceGesture && (!exactState || response.width !== settledSize))) {
       URL.revokeObjectURL(url);
       currentRender = undefined;
@@ -662,6 +667,8 @@ async function displaySlice(response: RenderResponse, key: string) {
     gamutSliceImage.src = url;
     gamutSliceImage.dataset.renderer = response.renderer;
     gamutSliceImage.dataset.view = String(response.profile);
+    gamutSliceImage.dataset.fullRec2020 = String(response.fullRec2020);
+    gamutSliceImage.dataset.desaturate = String(response.desaturate);
     gamutSliceImage.dataset.imageGeneration = String(response.id);
     gamutSliceImage.dataset.imageCode = JSON.stringify([response.j]);
     if (response.renderer === "webgpu") confirmedSliceRenderer = "webgpu";
@@ -697,6 +704,8 @@ function requestEvaluate() {
     fittedRadiusX: code.x,
     fittedRadiusY: code.y,
     backgroundJ: currentBackgroundJ(),
+    fullRec2020,
+    desaturate: effectiveDesaturate(),
   });
 }
 function requestRender() {
@@ -712,7 +721,7 @@ function requestRender() {
   // This avoids starvation when fast gestures previously cancelled every job.
   if (currentRender) return;
   const id = ++renderId;
-  currentRender = { id, key, profile: selectedView, j: code.j, width: size, height: size };
+  currentRender = { id, key, profile: selectedView, j: code.j, width: size, height: size, fullRec2020, desaturate: effectiveDesaturate() };
   sliceWorker.postMessage({
     kind: "render",
     id,
@@ -720,6 +729,8 @@ function requestRender() {
     j: code.j,
     width: size,
     height: size,
+    fullRec2020,
+    desaturate: effectiveDesaturate(),
   });
 }
 function schedule() {
@@ -731,18 +742,17 @@ function schedule() {
   requestRender();
 }
 function parsePatches(values: Float64Array) {
-  if (values.length !== PATCH_NAMES.length * 10) return;
+  if (values.length !== PATCH_NAMES.length * 7) return;
   const patches: Patch[] = [];
   for (let i = 0; i < PATCH_NAMES.length; i++) {
-    const o = i * 10;
+    const o = i * 7;
     patches.push({
       name: PATCH_NAMES[i],
       j: clamp01(values[o]),
       x: clamp01(values[o + 1]),
       y: clamp01(values[o + 2]),
-      p3: [values[o + 3], values[o + 4], values[o + 5]],
-      srgb: [values[o + 6], values[o + 7], values[o + 8]],
-      available: values[o + 9] > 0.5,
+      color: [values[o + 3], values[o + 4], values[o + 5]],
+      available: values[o + 6] > 0.5,
     });
   }
   currentPatches = patches;
@@ -754,20 +764,45 @@ function parsePatches(values: Float64Array) {
   // without requiring a picker gesture.
   drawIndicators();
 }
-function requestPatches() {
-  currentPatches = [];
-  activePatch = null;
-  activeTarget = null;
-  plotFrame.dataset.snapTarget = "none";
-  plotFrame.dataset.jSnapTarget = "none";
-  plotFrame.dataset.colorcheckerRingCount = "0";
-  updatePatchLocators();
+function requestPatches(reset = false) {
+  if (reset) {
+    currentPatches = [];
+    activePatch = null;
+    activeTarget = null;
+    plotFrame.dataset.snapTarget = "none";
+    plotFrame.dataset.jSnapTarget = "none";
+    plotFrame.dataset.colorcheckerRingCount = "0";
+    updatePatchLocators();
+  }
   const id = ++checkerId;
   checkerWorker.postMessage({
     kind: "colorchecker",
     id,
-    profile: SOURCE_PROFILE,
+    profile: selectedView,
+    desaturate: effectiveDesaturate(),
   });
+}
+
+async function displayColorchecker(response: ColorCheckerResponse) {
+  if (response.id !== checkerId || response.profile !== selectedView || response.desaturate !== effectiveDesaturate()) return;
+  const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
+  const decoded = new Image(1024, 1024);
+  decoded.src = url;
+  try {
+    await decoded.decode();
+    if (response.id !== checkerId || response.profile !== selectedView || response.desaturate !== effectiveDesaturate()) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    const previous = colorcheckerUrl;
+    gamutColorcheckerImage.src = url;
+    gamutColorcheckerImage.dataset.view = String(response.profile);
+    gamutColorcheckerImage.dataset.desaturate = String(response.desaturate);
+    colorcheckerUrl = url;
+    if (previous) URL.revokeObjectURL(previous);
+  } catch {
+    URL.revokeObjectURL(url);
+  }
 }
 function chooseView(view: ViewId) {
   cancelSliceTracking();
@@ -779,11 +814,31 @@ function chooseView(view: ViewId) {
   closeViewMenu(true);
   // No coordinate conversion, marker reload, snap projection, or background edit.
   schedule();
+  requestPatches();
   if (imagePrepared) {
     requestImagePreview();
     requestImageSample();
   }
 }
+
+function setAuthoringOptions(nextFull: boolean, nextDesaturate = desaturate) {
+  const previousAppearance = effectiveDesaturate();
+  fullRec2020 = nextFull;
+  desaturate = nextDesaturate;
+  const nextAppearance = effectiveDesaturate();
+  fullRec2020Toggle.setAttribute("aria-pressed", String(fullRec2020));
+  desaturateToggle.disabled = !fullRec2020;
+  desaturateToggle.setAttribute("aria-pressed", String(desaturate));
+  imageKey = "";
+  currentRender = undefined;
+  if (previousAppearance !== nextAppearance) requestPatches();
+  schedule();
+  if (imagePrepared && previousAppearance !== nextAppearance) { requestImagePreview(); requestImageSample(); }
+}
+fullRec2020Toggle.addEventListener("click", () => setAuthoringOptions(!fullRec2020));
+desaturateToggle.addEventListener("click", () => {
+  if (fullRec2020) setAuthoringOptions(true, !desaturate);
+});
 function closeViewMenu(restoreFocus = false) {
   viewMenu.hidden = true;
   preview.setAttribute("aria-expanded", "false");
@@ -813,10 +868,11 @@ function setFromHex() {
   evaluatorWorker.postMessage({
     kind: "set",
     id,
-    profile: SOURCE_PROFILE,
+    profile: selectedView,
     red: decoded[0],
     green: decoded[1],
     blue: decoded[2],
+    fullRec2020,
   });
 }
 
@@ -844,6 +900,7 @@ function setImageTransformBusy(busy: boolean) {
 function finishImageAppearanceIfReady() {
   const pending = pendingImageAppearance;
   if (pending?.view === selectedView && pending.scale203 === imageScaleBy203 &&
+    pending.desaturate === effectiveDesaturate() &&
     pending.previewReady && pending.loupeReady) setImageTransformBusy(false);
 }
 
@@ -940,6 +997,7 @@ function imageRequestPrepare() {
     transfer: embedded || String(imageSummary?.format ?? "").toLowerCase() === "dng" ? null : imageTransferSelect.value,
     view: selectedView,
     scale203: imageScaleBy203,
+    desaturate: effectiveDesaturate(),
   } satisfies ImageWorkerRequest);
 }
 
@@ -1038,19 +1096,19 @@ function requestImageSample() {
   if (!imagePrepared || !imageFile) return;
   const token = ++imageSampleToken;
   latestImageSampleToken = token;
-  if (pendingImageAppearance?.view === selectedView && pendingImageAppearance.scale203 === imageScaleBy203) {
+  if (pendingImageAppearance?.view === selectedView && pendingImageAppearance.scale203 === imageScaleBy203 && pendingImageAppearance.desaturate === effectiveDesaturate()) {
     pendingImageAppearance.sampleToken = token;
     pendingImageAppearance.loupeReady = false;
   }
-  imageWorker.postMessage({ kind: "sample", id: imageRequestId, generation: imageGeneration, token, format: imageFormat, x: imagePointerX, y: imagePointerY, radius: 3, view: selectedView, scale203: imageScaleBy203 } satisfies ImageWorkerRequest);
+  imageWorker.postMessage({ kind: "sample", id: imageRequestId, generation: imageGeneration, token, format: imageFormat, x: imagePointerX, y: imagePointerY, radius: 3, view: selectedView, scale203: imageScaleBy203, desaturate: effectiveDesaturate() } satisfies ImageWorkerRequest);
 }
 
 function requestImagePreview() {
   if (!imagePrepared || !imageFile) return;
   const appearanceToken = ++imageAppearanceToken;
-  pendingImageAppearance = { token: appearanceToken, view: selectedView, scale203: imageScaleBy203, previewReady: false, loupeReady: false };
+  pendingImageAppearance = { token: appearanceToken, view: selectedView, scale203: imageScaleBy203, desaturate: effectiveDesaturate(), previewReady: false, loupeReady: false };
   setImageTransformBusy(true);
-  imageWorker.postMessage({ kind: "preview", id: imageRequestId, generation: imageGeneration, appearanceToken, format: imageFormat, view: selectedView, scale203: imageScaleBy203 } satisfies ImageWorkerRequest);
+  imageWorker.postMessage({ kind: "preview", id: imageRequestId, generation: imageGeneration, appearanceToken, format: imageFormat, view: selectedView, scale203: imageScaleBy203, desaturate: effectiveDesaturate() } satisfies ImageWorkerRequest);
 }
 
 function setImagePointer(x: number, y: number, sample = true) {
@@ -1159,7 +1217,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       URL.revokeObjectURL(url);
       return;
     }
-    const presentationMismatch = response.view !== selectedView || response.scale203 !== imageScaleBy203;
+    const presentationMismatch = response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate();
     if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
     imagePreviewUrl = url;
     imagePreview.src = imagePreviewUrl;
@@ -1184,7 +1242,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
     return;
   }
   if (response.kind === "preview") {
-    if (!imagePrepared || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.scale203 !== imageScaleBy203) return;
+    if (!imagePrepared || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate()) return;
     const generation = imageGeneration;
     const requestId = imageRequestId;
     const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
@@ -1198,7 +1256,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       imageSetStatus("Display transform could not be decoded; previous image retained.", true);
       return;
     }
-    if (generation !== imageGeneration || requestId !== imageRequestId || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.scale203 !== imageScaleBy203) {
+    if (generation !== imageGeneration || requestId !== imageRequestId || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate()) {
       URL.revokeObjectURL(url);
       return;
     }
@@ -1207,7 +1265,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
     imagePreview.src = imagePreviewUrl;
     imagePreview.dataset.renderer = response.renderer;
     imagePreview.alt = `Loaded ${imageFormat.toUpperCase()} image (${imageWidth} × ${imageHeight})`;
-    if (pendingImageAppearance?.token === response.appearanceToken && pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203) {
+    if (pendingImageAppearance?.token === response.appearanceToken && pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203 && pendingImageAppearance.desaturate === response.desaturate) {
       pendingImageAppearance.previewReady = true;
       finishImageAppearanceIfReady();
     }
@@ -1215,7 +1273,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
   }
   if (response.kind === "sample") {
     if (response.token !== latestImageSampleToken) return;
-    if (response.view !== selectedView || response.scale203 !== imageScaleBy203) return;
+    if (response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate()) return;
     imageViewport.dataset.sampleX = String(response.x);
     imageViewport.dataset.sampleY = String(response.y);
     imageViewport.dataset.sampleCount = String(response.points.length);
@@ -1232,7 +1290,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       } catch {
         URL.revokeObjectURL(url);
         if (pendingImageAppearance?.sampleToken === response.token &&
-          pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203) {
+          pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203 && pendingImageAppearance.desaturate === response.desaturate) {
           pendingImageAppearance.loupeReady = true;
           finishImageAppearanceIfReady();
         }
@@ -1242,7 +1300,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       // active blob URL alive until the next replacement; revoking it
       // immediately after decode can make Safari discard the HDR resource
       // while it is still being presented.
-      if (response.id !== imageRequestId || response.generation !== imageGeneration || response.token !== latestImageSampleToken || response.view !== selectedView || response.scale203 !== imageScaleBy203 || !imagePrepared) {
+      if (response.id !== imageRequestId || response.generation !== imageGeneration || response.token !== latestImageSampleToken || response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate() || !imagePrepared) {
         URL.revokeObjectURL(url);
         return;
       }
@@ -1263,7 +1321,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       drawIndicators();
       drawImageOverlay();
       if (pendingImageAppearance?.sampleToken === response.token &&
-        pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203) {
+        pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203 && pendingImageAppearance.desaturate === response.desaturate) {
         pendingImageAppearance.loupeReady = true;
         finishImageAppearanceIfReady();
       }
@@ -1408,7 +1466,7 @@ imageViewport.addEventListener("pointermove", event => {
 imageViewport.addEventListener("pointerup", event => { if (event.pointerId === imageTouchPointerId) finishImageTracking(); });
 imageViewport.addEventListener("pointercancel", event => { if (event.pointerId === imageTouchPointerId) finishImageTracking(); });
 
-[sliceWorker, evaluatorWorker].forEach((worker) => {
+[sliceWorker, evaluatorWorker, checkerWorker].forEach((worker) => {
   worker.onmessage = (
     event: MessageEvent<
       | RenderResponse
@@ -1443,8 +1501,10 @@ imageViewport.addEventListener("pointercancel", event => { if (event.pointerId =
       return;
     }
     if (response.kind === "colorchecker") {
-      if (response.id === checkerId)
+      if (response.id === checkerId && response.profile === selectedView && response.desaturate === effectiveDesaturate()) {
         parsePatches(response.points);
+        void displayColorchecker(response);
+      }
       return;
     }
     if (response.kind === "set") {
@@ -1486,7 +1546,8 @@ imageViewport.addEventListener("pointercancel", event => { if (event.pointerId =
         response.profile !== render.profile ||
         response.width !== render.width ||
         response.height !== render.height ||
-        response.j !== render.j
+        response.j !== render.j || response.fullRec2020 !== render.fullRec2020 ||
+        response.desaturate !== render.desaturate
       )
         return;
       void displaySlice(response, render.key);
@@ -1885,6 +1946,7 @@ window.addEventListener("pagehide", () => {
   pageClosed = true;
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   if (sliceUrl) URL.revokeObjectURL(sliceUrl);
+  if (colorcheckerUrl) URL.revokeObjectURL(colorcheckerUrl);
   if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
   if (imageLoupeUrl) URL.revokeObjectURL(imageLoupeUrl);
 });
@@ -1908,6 +1970,9 @@ encodedValue.addEventListener("keydown", (event) => {
 });
 
 setAllCode(code);
+desaturateToggle.disabled = !fullRec2020;
+fullRec2020Toggle.setAttribute("aria-pressed", String(fullRec2020));
+desaturateToggle.setAttribute("aria-pressed", String(desaturate));
 paintCheckerboard();
 drawIndicators();
 plotFrame.dataset.sliceTracking = "idle";
@@ -1917,6 +1982,6 @@ jReferenceTick.style.bottom = `${J_REFERENCE_WHITE * 100}%`;
 jReferenceTick.title = `203 nits HDR white — J\u2032 ${J_REFERENCE_WHITE.toFixed(6)}`;
 backgroundJ = 0.15;
 updateBackground();
-requestPatches();
+requestPatches(true);
 requestEvaluate();
 requestRender();

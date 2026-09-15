@@ -81,7 +81,7 @@ def main() -> None:
             "forward_xyz": _apply(forward, VECTORS),
             "inverse_acescg": _apply(inverse, VECTORS),
         }
-    hdr_inverse = config.getProcessor(_view_group(config, PROFILES["2"]), ocio.TRANSFORM_DIR_INVERSE).getDefaultCPUProcessor()
+    hdr_inverse = config.getProcessor(_view_group(config, PROFILES["0"]), ocio.TRANSFORM_DIR_INVERSE).getDefaultCPUProcessor()
     codes = [[0, .5, .5], [REFERENCE_J, .5, .5], [100 / PEAK, .5, .5],
              [1, .5, .5], [.38, .86, .62], [.3, .38, .65], [.6, .55, .53], [.1, .48, .52]]
     xyz = np.array([code_xyz(code) for code in codes])
@@ -92,7 +92,7 @@ def main() -> None:
     records["picker"] = {
         "peak_jhk": PEAK, "reference_j": REFERENCE_J,
         "reference_100_jhk": neutral_jhk(100), "codes": codes,
-        "source_p3": (xyz @ np.linalg.inv(P3).T).tolist(),
+        "source_rec2020": (xyz @ np.linalg.inv(REC2020).T).tolist(),
         "scene": scene, "backgrounds": backgrounds, "views": {},
     }
     for profile_id, view_name in PROFILES.items():

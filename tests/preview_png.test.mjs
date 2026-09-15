@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { initSync, picker_evaluate, picker_colorchecker, picker_from_encoded } from "../src/wasm/pkg/modcam16_color_core.js";
+import { initSync, picker_code_from_acescg, picker_evaluate, picker_evaluate_mode, picker_colorchecker, picker_colorchecker_mode, picker_from_encoded } from "../src/wasm/pkg/modcam16_color_core.js";
 import { encodeLinearRgbaPng, encodePreview, encodePq, displayIcc } from "../src/preview_png.ts";
 import { J_HK_PEAK, J_REFERENCE_WHITE } from "../src/picker_math.ts";
 import { readPng } from "./png_reader.mjs";
@@ -35,7 +35,7 @@ test("fixed authoring inverse and all forward views agree with Python OpenColorI
       assert.equal(values[0], 1, `valid code ${code}`);
       assert.deepEqual(values.slice(0, 26), canonical.slice(0, 26));
       for (let c = 0; c < 3; c++) {
-        close(values[23 + c], oracle.source_p3[index][c], 1e-8, `source ${index}/${c}`);
+        close(values[23 + c], oracle.source_rec2020[index][c], 1e-8, `authoring Rec.2020 ${index}/${c}`);
         // At the 1000-nit endpoint the inverse shoulder is ill-conditioned:
         // OCIO float32 RGB/XYZ rounding amplifies into ~3.5e-5 relative AP1.
         const sceneTolerance = code[0] === 1 ? 1e-4 : 3e-5;
@@ -44,6 +44,62 @@ test("fixed authoring inverse and all forward views agree with Python OpenColorI
       }
     }
   }
+});
+
+test("authoring gamut accepts Rec.2020 colors outside P3 and rejects outside Rec.2020", () => {
+  const wider = picker_evaluate(2, .2, .21, .53, 0);
+  assert.equal(wider[0], 1);
+  assert.ok(wider[23] >= 0 && wider[24] >= 0 && wider[25] >= 0);
+  const rec2020ToXyz = [
+    .636958048301291, .144616903586208, .168880975164172,
+    .262700212011267, .677998071518871, .059301716469862,
+    0, .0280726930490874, 1.06098505771079,
+  ];
+  const xyzToP3 = [2.493496911941425, -0.931383617919124, -0.402710784450717,
+    -0.829488969561575, 1.762664060318347, .023624685841944,
+    .035845830243784, -.076172389268042, .956884524007687];
+  const xyz = [0, 1, 2].map(row => rec2020ToXyz[row * 3] * wider[23] + rec2020ToXyz[row * 3 + 1] * wider[24] + rec2020ToXyz[row * 3 + 2] * wider[25]);
+  const p3Rgb = [0, 1, 2].map(row => xyzToP3[row * 3] * xyz[0] + xyzToP3[row * 3 + 1] * xyz[1] + xyzToP3[row * 3 + 2] * xyz[2]);
+  assert.ok(Math.min(...p3Rgb) < 0, `expected the sample to be outside P3: ${p3Rgb}`);
+  const outside = picker_evaluate(2, .2, 0, 0, 0);
+  assert.equal(outside[0], 0);
+  assert.ok(outside.slice(1, 4).every(Number.isNaN));
+});
+
+test("Full Rec.2020 off requires the P3 authoring cube", () => {
+  const wider = picker_evaluate_mode(0, .2, .21, .53, 0, true, false);
+  const restricted = picker_evaluate_mode(0, .2, .21, .53, 0, false, false);
+  assert.equal(wider[0], 1);
+  assert.equal(restricted[0], 0);
+  const aboveP3Peak = [.61, .97, .59];
+  assert.equal(picker_evaluate_mode(0, ...aboveP3Peak, 0, true, false)[0], 1);
+  assert.equal(picker_evaluate_mode(0, ...aboveP3Peak, 0, false, false)[0], 0);
+  const brightNeutral = picker_evaluate_mode(0, .8, .5, .5, 0, false, false);
+  assert.equal(brightNeutral[0], 1);
+  assert.ok(brightNeutral.slice(23, 26).every(value => value > 1));
+});
+
+test("Desaturate changes selected-view pixels but retains canonical picker values and all patches", () => {
+  const normal = picker_evaluate_mode(0, .38, .72, .63, .15, true, false);
+  const desaturated = picker_evaluate_mode(0, .38, .72, .63, .15, true, true);
+  assert.deepEqual(desaturated.slice(0, 26), normal.slice(0, 26));
+  assert.deepEqual(desaturated.slice(29), normal.slice(29));
+  assert.ok(desaturated.slice(26, 29).some((value, channel) => Math.abs(value - normal[26 + channel]) > 1e-5));
+  const patches = picker_colorchecker_mode(0, true);
+  assert.equal(patches.length, 18 * 7);
+  assert.ok(Array.from({ length: 18 }, (_, index) => patches[index * 7 + 6]).every(Boolean));
+});
+
+test("Desaturate clips the reported high-ACEScg color without changing availability", () => {
+  const solved = picker_code_from_acescg(25.2811, 29.6013, .0422);
+  assert.equal(solved[0], 1);
+  const code = picker_evaluate_mode(0, ...solved.slice(1), .15, true, false);
+  const desaturated = picker_evaluate_mode(0, ...solved.slice(1), .15, true, true);
+  assert.equal(code[0], 1);
+  assert.equal(desaturated[0], 1);
+  assert.deepEqual(desaturated.slice(0, 26), code.slice(0, 26));
+  assert.ok(desaturated.slice(26, 29).every(Number.isFinite));
+  assert.ok(desaturated.slice(26, 29).some(value => Math.abs(value) > 1e-9));
 });
 
 test("PNG formats, metadata, and pixel samples match independent OCIO presentation values", () => {

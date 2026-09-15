@@ -2352,12 +2352,18 @@ pub fn picker_code_from_acescg(red: f64, green: f64, blue: f64) -> Vec<f64> {
     modcam16_color_core::picker::picker_code_from_acescg(red, green, blue)
 }
 
-#[wasm_bindgen(js_name = image_picker_display_rgb_ap0_batch)]
-pub fn picker_display_rgb_ap0_batch(
+#[wasm_bindgen(js_name = image_picker_display_rgb_ap0_batch_mode)]
+pub fn picker_display_rgb_ap0_batch_mode(
     pixels: &[f32],
     view: u32,
     scale203: bool,
+    desaturate: bool,
 ) -> Vec<f32> {
+    modcam16_color_core::picker::picker_display_rgb_ap0_batch_mode(pixels, view, scale203, desaturate)
+}
+
+#[wasm_bindgen(js_name = image_picker_display_rgb_ap0_batch)]
+pub fn picker_display_rgb_ap0_batch(pixels: &[f32], view: u32, scale203: bool) -> Vec<f32> {
     modcam16_color_core::picker::picker_display_rgb_ap0_batch(pixels, view, scale203)
 }
 

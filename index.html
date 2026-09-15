@@ -68,6 +68,7 @@
               id="gamut-slice"
               width="512" height="512" alt="J', x', and y' gamut slice"
             />
+            <img id="gamut-colorchecker" width="1024" height="1024" alt="" aria-hidden="true" />
             <canvas
               id="gamut-indicators"
               width="512" height="512" aria-hidden="true"
@@ -76,21 +77,25 @@
               >Loading color engine…</span
             >
           </div>
+          <div class="slice-options" role="group" aria-label="Authoring gamut options">
+            <button id="full-rec2020-toggle" class="action-button toggle-button" type="button" aria-pressed="true">Full Rec.2020</button>
+            <button id="desaturate-toggle" class="action-button toggle-button" type="button" aria-pressed="false">Desaturate</button>
+          </div>
         </div>
         <div class="preview-panel">
           <div class="preview-column">
             <button id="preview" class="preview" type="button"
               aria-label="Choose preview view transform" aria-haspopup="menu"
               aria-expanded="false" aria-controls="view-menu"
-              title="ACES 2.0 - SDR 100 nits (Rec.709) — click to change view">
+              title="ACES 2.0 - HDR 1000 nits (Rec.2020) — click to change view">
               <img id="preview-image" width="256" height="256" alt="Picked color and background surround" hidden />
               <span class="view-menu-cue" aria-hidden="true">▾</span>
             </button>
             <div id="view-menu" class="view-menu" role="menu" aria-label="Preview view transform" hidden>
-              <button type="button" role="menuitemradio" aria-checked="true" data-view="1">ACES 2.0 - SDR 100 nits (Rec.709)</button>
+              <button type="button" role="menuitemradio" aria-checked="false" data-view="1">ACES 2.0 - SDR 100 nits (Rec.709)</button>
               <button type="button" role="menuitemradio" aria-checked="false" data-view="4">ACES 2.0 - SDR 100 nits (P3 D65)</button>
               <button type="button" role="menuitemradio" aria-checked="false" data-view="2">ACES 2.0 - HDR 1000 nits (P3 D65)</button>
-              <button type="button" role="menuitemradio" aria-checked="false" data-view="0">ACES 2.0 - HDR 1000 nits (Rec.2020)</button>
+              <button type="button" role="menuitemradio" aria-checked="true" data-view="0">ACES 2.0 - HDR 1000 nits (Rec.2020)</button>
             </div>
             <span id="preview-status" class="preview-status" role="status" hidden></span>
           </div>
@@ -182,7 +187,7 @@
         <p id="image-stats" class="image-stats" role="status"></p>
       </section>
       <footer class="app-footer">
-        * Fixed HDR P3 authoring. Click the preview to change its view.
+        * Fixed HDR Rec.2020 authoring. Click the preview to change its view.
       </footer>
     </main>
     <script type="module" src="/src/main.ts"></script>

@@ -251,14 +251,15 @@ async function elementPng(page, selector) {
 test("gamut viewport keeps fixed canvas layers around an RGBA slice PNG", { timeout: 60_000 }, async context => {
   const { page, errors } = await openPicker(context);
   const layers = await page.evaluate(() => {
-    const selectors = ["#gamut-checkerboard", "#gamut-slice", "#gamut-indicators"];
+    const selectors = ["#gamut-checkerboard", "#gamut-slice", "#gamut-colorchecker", "#gamut-indicators"];
     const boxes = selectors.map(selector => {
       const element = document.querySelector(selector);
       const rect = element.getBoundingClientRect();
       return { selector, tag: element.tagName, width: rect.width, height: rect.height, left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
     });
     const checker = document.querySelector("#gamut-checkerboard");
-    const overlay = document.querySelector("#gamut-indicators");
+      const overlay = document.querySelector("#gamut-indicators");
+      const dots = document.querySelector("#gamut-colorchecker");
     const checkerPixels = checker.getContext("2d").getImageData(0, 0, checker.width, checker.height).data;
     const overlayPixels = overlay.getContext("2d").getImageData(0, 0, overlay.width, overlay.height).data;
     return {
@@ -269,11 +270,12 @@ test("gamut viewport keeps fixed canvas layers around an RGBA slice PNG", { time
       }),
       checkerInk: Array.from(checkerPixels).some((value, index) => index % 4 !== 3 && value !== 0),
       overlayInk: Array.from(overlayPixels).some((value, index) => index % 4 === 3 && value !== 0),
+      dotSource: dots.getAttribute("src"),
       order: Array.from(document.querySelector(".plot-frame").children).map(element => element.id),
     };
   });
-  assert.deepEqual(layers.order.slice(0, 3), ["gamut-checkerboard", "gamut-slice", "gamut-indicators"]);
-  assert.deepEqual(layers.backing, [["#gamut-checkerboard", 512, 512], ["#gamut-slice", 512, 512], ["#gamut-indicators", 512, 512]]);
+  assert.deepEqual(layers.order.slice(0, 4), ["gamut-checkerboard", "gamut-slice", "gamut-colorchecker", "gamut-indicators"]);
+  assert.deepEqual(layers.backing, [["#gamut-checkerboard", 512, 512], ["#gamut-slice", 512, 512], ["#gamut-colorchecker", 1024, 1024], ["#gamut-indicators", 512, 512]]);
   for (const box of layers.boxes) {
     assert.ok(Math.abs(box.width - layers.boxes[0].width) < 0.01, `${box.selector} width`);
     assert.ok(Math.abs(box.height - layers.boxes[0].height) < 0.01, `${box.selector} height`);
@@ -282,6 +284,15 @@ test("gamut viewport keeps fixed canvas layers around an RGBA slice PNG", { time
   }
   assert.equal(layers.checkerInk, true);
   assert.equal(layers.overlayInk, true);
+  assert.ok(layers.dotSource?.startsWith("blob:"));
+  const dots = await elementPng(page, "#gamut-colorchecker");
+  assert.deepEqual([dots.width, dots.height, dots.colorType], [1024, 1024, 6]);
+  const firstPatch = await page.evaluate(async () => {
+    const wasm = await import("/src/wasm/pkg/modcam16_color_core.js");
+    await wasm.default();
+    return [...wasm.picker_colorchecker().slice(0, 3)];
+  });
+  assert.ok(dots.alpha(Math.round(firstPatch[1] * 1023), Math.round((1 - firstPatch[2]) * 1023)) > 0, "dot layer should contain visible coverage");
 
   const slice = await currentSlicePng(page);
   assert.equal(slice.colorType, 6);
@@ -663,6 +674,27 @@ test("mobile view menu and controls stay visible at 360x645 DPR 3", { timeout: 6
   assert.deepEqual(errors, []);
 });
 
+test("authoring toggles keep canonical readouts stable and retain Desaturate state", { timeout: 60_000 }, async context => {
+  const { page, errors } = await openPicker(context);
+  await page.waitForFunction(() => document.querySelector("#preview")?.dataset.view === "0");
+  assert.equal(await page.locator("#full-rec2020-toggle").getAttribute("aria-pressed"), "true");
+  assert.equal(await page.locator("#desaturate-toggle").isDisabled(), false);
+  const canonical = await page.locator("#linear-value").textContent();
+  await page.locator("#full-rec2020-toggle").click();
+  await page.waitForFunction(() => document.querySelector("#full-rec2020-toggle")?.getAttribute("aria-pressed") === "false");
+  assert.equal(await page.locator("#desaturate-toggle").isDisabled(), true);
+  assert.equal(await page.locator("#linear-value").textContent(), canonical);
+  await page.locator("#full-rec2020-toggle").click();
+  await page.locator("#desaturate-toggle").click();
+  assert.equal(await page.locator("#desaturate-toggle").getAttribute("aria-pressed"), "true");
+  await page.locator("#full-rec2020-toggle").click();
+  assert.equal(await page.locator("#desaturate-toggle").isDisabled(), true);
+  await page.locator("#full-rec2020-toggle").click();
+  assert.equal(await page.locator("#desaturate-toggle").getAttribute("aria-pressed"), "true");
+  assert.equal(await page.locator("#linear-value").textContent(), canonical);
+  assert.deepEqual(errors, []);
+});
+
 test("touch and pen swipe the slice relatively without a contact jump", { timeout: 60_000 }, async context => {
   const { page, errors } = await openPicker(context);
   await pickXY(page, .4, .4);
@@ -811,7 +843,7 @@ test("image locator inspects PNG metadata, prepares manual input, and samples a 
   assert.deepEqual(errors, []);
 });
 
-test("unchecked HDR P3 slice PNG accepts bright neighborhoods", { timeout: 60_000 }, async context => {
+test("unchecked HDR Rec.2020-authoring slice PNG accepts bright neighborhoods", { timeout: 60_000 }, async context => {
   const { page, errors } = await openPicker(context);
   await chooseView(page, 2);
   await setJNumber(page, 0.8);
@@ -827,7 +859,7 @@ test("unchecked HDR P3 slice PNG accepts bright neighborhoods", { timeout: 60_00
   assert.deepEqual(errors, []);
 });
 
-test("WebGPU image appearance matches the official-table WASM path for every view and scale", { timeout: 60_000 }, async context => {
+test("WebGPU desaturated image and slice appearance matches the official-table WASM path", { timeout: 60_000 }, async context => {
   const server = await createServer({ server: { host: "127.0.0.1", port: 0 } });
   await server.listen();
   const address = server.httpServer?.address();
@@ -843,29 +875,50 @@ test("WebGPU image appearance matches the official-table WASM path for every vie
   const parity = await page.evaluate(async () => {
     const wasm = await import("/src/wasm/decomposition_pkg/modcam16_decomposition_wasm.js");
     await wasm.default();
+    const core = await import("/src/wasm/pkg/modcam16_color_core.js");
+    await core.default();
     const { SliceWebGpuRenderer } = await import("/src/slice_webgpu.ts");
     const renderer = new SliceWebGpuRenderer();
     if (!renderer.available) return null;
-    const parameters = wasm.picker_gpu_parameters();
+    const parameters = core.picker_gpu_parameters();
     const source = new Float32Array([.18, .18, .18, .5, .1, .05, .02, .3, .7, 1.2, .8, .25]);
     const results = [];
-    for (const view of [1, 4, 2, 0]) for (const scale203 of [false, true]) {
+    for (const view of [1, 4, 2, 0]) for (const scale203 of [false, true]) for (const desaturate of [false, true]) {
       const slot = view === 0 ? 0 : view === 1 ? 1 : view === 2 ? 2 : 3;
-      const gpu = await renderer.renderImage(parameters, slot, scale203, source);
-      const cpu = wasm.image_picker_display_rgb_ap0_batch(source, view, scale203);
+      const gpu = await renderer.renderImage(parameters, slot, scale203, desaturate, source);
+      const cpu = wasm.image_picker_display_rgb_ap0_batch_mode(source, view, scale203, desaturate);
       let maximum = 0;
       for (let index = 0; index < cpu.length; index += 1)
         maximum = Math.max(maximum, Math.abs(gpu[index] - cpu[index]));
-      results.push({ view, scale203, maximum, length: gpu.length });
+      results.push({ view, scale203, desaturate, maximum, length: gpu.length });
     }
-    return results;
+    const width = 65, height = 65, j = .9999989018855512;
+    const gpuSlice = await renderer.render(parameters, 0, j, width, height, true, true);
+    const cpuSlice = core.picker_render_linear_rows_mode(0, j, width, height, 0, height, true, true);
+    let sliceMaximum = 0, sliceRelativeMaximum = 0, alphaMismatches = 0, visible = 0;
+    for (let index = 0; index < cpuSlice.length; index += 4) {
+      for (let channel = 0; channel < 3; channel++) {
+        const difference = Math.abs(gpuSlice[index + channel] - cpuSlice[index + channel]);
+        sliceMaximum = Math.max(sliceMaximum, difference);
+        sliceRelativeMaximum = Math.max(sliceRelativeMaximum, difference / Math.max(1, Math.abs(cpuSlice[index + channel])));
+      }
+      if (gpuSlice[index + 3] !== cpuSlice[index + 3]) alphaMismatches++;
+      if (cpuSlice[index + 3] > .5 && cpuSlice.slice(index, index + 3).some(value => Math.abs(value) > 1e-9)) visible++;
+    }
+    return { images: results, slice: { maximum: sliceMaximum, relativeMaximum: sliceRelativeMaximum, alphaMismatches, visible } };
   });
   if (parity === null) return;
-  assert.equal(parity.length, 8);
-  for (const result of parity) {
+  assert.equal(parity.images.length, 16);
+  for (const result of parity.images) {
     assert.equal(result.length, 12);
     assert.ok(result.maximum < .002, JSON.stringify(result));
   }
+  assert.equal(parity.slice.alphaMismatches, 0);
+  assert.ok(parity.slice.visible > 0);
+  // The 1000-nit inverse shoulder amplifies f32 equation-order differences;
+  // require exact availability and a bounded sub-0.2% display error.
+  assert.ok(parity.slice.maximum < .007, JSON.stringify(parity.slice));
+  assert.ok(parity.slice.relativeMaximum < .002, JSON.stringify(parity.slice));
 });
 
 test("image appearance falls back to the bounded WASM worker pool without WebGPU", { timeout: 60_000 }, async context => {

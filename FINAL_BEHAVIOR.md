@@ -6,10 +6,36 @@ The fixed authoring pipeline below supersedes the former five-profile workflow.
 
 ## Fixed authoring and independent presentation
 
-(J', x', y') always specifies **linear P3-D65 source display RGB**. One source
-unit represents 203 nits. Convert source RGB to D65 XYZ, scale by 2.03 once,
-then apply the inverse **ACES 2.0 - HDR 1000 nits (P3 D65)** view transform.
-The result is canonical scene-linear ACEScg/AP1.
+(J', x', y') always specifies **linear Rec.2020-D65 authoring RGB**. One source
+unit represents 203 nits. Convert the authoring RGB to D65 XYZ, scale by 2.03
+once, then apply the inverse **ACES 2.0 - HDR 1000 nits (Rec.2020)** view
+transform. The result is canonical scene-linear ACEScg/AP1. The Rec.2020
+authoring gamut is intentionally independent of the selected presentation
+view; selecting a P3 presentation view does not alter Rec.2020 authoring validity.
+
+Full Rec.2020 authoring is enabled by default. When it is disabled, authored
+picker and slice availability still require finite, nonnegative Rec.2020
+channels no greater than `10 / 2.03`, and additionally require nonnegative
+linear P3 channels no greater than `10 / 2.03`. Thus restricted mode requires
+both the Rec.2020 and P3 representations to lie inside the same finite
+authoring cube. This toggle does not change image-pixel acceptance, image
+averaging, image-derived targets, or ColorChecker target availability; those
+remain Rec.2020-based.
+
+Desaturate is available only while Full Rec.2020 is enabled. It is an
+appearance-only operation: canonical coordinates, ACEScg/readouts, validity,
+snapping, image statistics, and average targets remain unchanged. For colored
+pixels, apply `x'' = 0.5 + 0.75 * (x' - 0.5)` and
+`y'' = 0.5 + 0.75 * (y' - 0.5)`, then reconstruct Rec.2020, apply the fixed
+inverse HDR Rec.2020 transform, and apply the selected presentation view. Before
+that inverse, clamp the reconstructed linear Rec.2020 channels to
+`[0, 10 / 2.03]`. The original authored validity mask remains authoritative:
+an out-of-cube desaturated intermediate is clipped rather than rejected, so
+turning on Desaturate cannot make an available color disappear. Only genuinely
+non-finite or otherwise unprocessable appearance inputs render black. UI
+overlay colors and ruler markers are not desaturated.
+
+The initial presentation view is **ACES 2.0 - HDR 1000 nits (Rec.2020)**.
 
 The selected view applies its forward ACES 2.0 transform to that same scene
 value. View changes must leave real and displayed coordinates, canonical
@@ -42,8 +68,8 @@ J' is linear in J_HK, not in luminance:
 
 ```text
 J_HK = J' * 217.2768649129496
-203-nit neutral: source P3 = 1, J_HK = 100, J' = 0.4602422813863053
-1000-nit neutral: source P3 = 1000/203, J' = 1
+203-nit neutral: authoring Rec.2020 = 1, J_HK = 100, J' = 0.4602422813863053
+1000-nit neutral: authoring Rec.2020 = 1000/203, J' = 1
 ```
 
 J' = 0 means J_HK = 0. The 203-nit HDR white is the sole browser ruler
@@ -73,7 +99,11 @@ orientation, the same color migrates as x' = 1 - old y', y' = old x'.
 
 The viewport is square Cartesian x'/y', x' increasing rightward and y' upward.
 Its valid mask intersects the fitted-radius disk, finite appearance inversion,
-and the nonnegative P3-D65 source RGB cube up to 1000/203 per channel.
+and the Rec.2020-D65 authoring RGB cube up to 1000/203 per channel. The
+authored-unit upper bound is therefore `10 / 2.03` on each linear channel;
+when Full Rec.2020 is off, the same finite `[0, 10 / 2.03]` cube requirement
+also applies after converting the sample to linear P3-D65. Image rasters using
+absolute 100-nit HDR units retain their separate `10.0` physical-unit bound.
 Small floating-point boundary tolerance is allowed; negative/out-of-peak
 colors are not silently made valid by clamping the inverse transform.
 
@@ -96,24 +126,27 @@ changes recompute the PNG. Background does not affect the slice.
 
 ## PNG preview and view menu
 
-The gamut viewport is three perfectly aligned layers: a canvas-painted
-checkerboard, an RGBA gamut-slice PNG, and a transparent indicator canvas. The
+The gamut viewport is four perfectly aligned layers: a canvas-painted
+checkerboard, an RGBA gamut-slice PNG, a transparent ColorChecker-dot PNG, and
+a transparent indicator canvas. The dot PNG is 1024 by 1024 for smooth edges
+and follows the selected view and Desaturate state. The
 PNG contains only the selected view's after-transform display-linear
 `(Rd', Gd', Bd')` values, encoded with the same SDR/HDR transfer, bit depth,
 ICC, cICP, and compression rules as the color preview. Its alpha is fully
 opaque for valid gamut pixels and transparent elsewhere so the checkerboard
 shows through.
 
-The top canvas contains every color-picking overlay: all ColorChecker dots and
-dim target rings, the neutral ring/cross, the active ring, and the current
-picked-color marker. Both canvases always keep a 512 by 512 backing store,
-regardless of renderer or middle-PNG resolution, and all three layers share
+The indicator canvas contains dim target rings, the neutral ring/cross, the
+active ring, and the current picked-color marker; these UI colors are never
+desaturated. Both canvases always keep a 512 by 512 backing store,
+regardless of renderer or middle-PNG resolution, and all four layers share
 the same square CSS bounds. WebGPU PNGs and settled WASM
 PNGs remain 512 by 512; only confirmed WASM rendering may use a coalesced 64 by
 64 PNG during J' interaction, without changing normalized alignment or canvas
 sharpness. The previous decoded slice remains
 visible until a matching replacement is decoded, and stale slice results are
-rejected by the `(view, J', size)` state key.
+rejected by the `(view, J', size, Full Rec.2020, effective Desaturate)` state
+key.
 
 During a live J' gesture, slice work is serialized rather than repeatedly
 cancelling every in-flight frame: each completed frame may advance the visible
@@ -165,7 +198,7 @@ Always show actual canonical linear ACEScg, which can exceed 1. Displayed
 snapped coordinates are the coordinates sent to evaluation. The visible
 six-digit hex field is sRGB-transfer encoded scene-linear AP1, not display RGB.
 Copy copies those six digits. Set validates exactly six hex digits, decodes
-AP1, applies the fixed forward HDR P3 view, and solves authoring coordinates.
+AP1, applies the fixed forward HDR Rec.2020 view, and solves authoring coordinates.
 Those solved coordinates determine subsequent calculation; do not keep a
 hidden imported color that disagrees with the controls.
 
@@ -181,7 +214,7 @@ only background value indicator. Preserve the existing foreground-matching
 background snap band during this gesture.
 
 Its neutral source RGB is derived from `(backgroundJ', 0.5, 0.5)` through the
-same fixed inverse HDR P3 and selected forward view. View switches never modify
+same fixed inverse HDR Rec.2020 and selected forward view. View switches never modify
 Background or its marker.
 
 The preview PNG remains square and is displayed at exactly the height of the
@@ -195,9 +228,10 @@ two-click desktop pick.
 ## ColorChecker and snapping
 
 Use the 18 official post-2014 Lab/D50 patch measurements, CAT02-adapted to D65,
-as fixed scene-linear ACEScg anchors. Their fixed HDR-P3 forward values divided
-by 2.03 determine authoring coordinates. Never regenerate them for a view
-switch. Show each patch at its exact x'/y' position with its name when active.
+as fixed scene-linear ACEScg anchors. Their fixed HDR-Rec.2020 forward values divided
+by 2.03 determine authoring coordinates. Never regenerate their coordinates for
+a view switch. Show each patch at its exact x'/y' position with its name when
+active; retain every patch even when the Full-off slice mask excludes it.
 
 - The nearest of the 18 patches or neutral cross is a candidate within
   Euclidean normalized x'/y' distance 0.020. Recompute on each X/Y update.
@@ -329,7 +363,7 @@ Changing interpretation reuses the retained native raster and re-prepares it;
 it never silently downsamples analysis data. The visible image is the same
 decoded, interpreted, bounded preview style used by the reference loader.
 For image appearance, expose a per-image `scale by 2.03` choice before the
-fixed HDR-P3 inverse. It defaults on for SDR-oriented sources and off for
+fixed HDR-Rec.2020 inverse. It defaults on for SDR-oriented sources and off for
 HDR-native EXR/DNG and embedded PQ/HLG sources, and the user may override it.
 Confirmed HEIC/HEIF gain-map images default this choice off; explicit user
 changes always win. The worker reports gain-map metadata detection separately
@@ -342,9 +376,9 @@ target.
 
 For image sampling, the Scale ×2.03 choice also declares the units of the
 prepared linear raster. When checked, values are interpreted in the picker’s
-203-nit source units (P3 peak 10/2.03) and are multiplied by 2.03 before the
+203-nit source units (Rec.2020 authoring peak 10/2.03) and are multiplied by 2.03 before the
 fixed HDR inverse. When unchecked, values are interpreted as absolute
-100-nit HDR units (P3 peak 10.0); they are divided by 2.03 only when mapped
+100-nit HDR units (Rec.2020 validity peak 10.0); they are divided by 2.03 only when mapped
 back to normalized authoring coordinates and are passed unchanged to the HDR
 inverse. These two representations of the same physical color must yield the
 same ACEScg and J′/x′/y′ result. Bright HDR pixels up to the 10.0 peak are
@@ -414,7 +448,7 @@ extracted by the `generate_aces_tables.py` workflow; the browser does not use
 an approximate curve or the non-official Rust implementation as its oracle.
 
 The GPU path converts prepared linear AP0 pixels through ACEScg, the fixed
-HDR 1000-nit P3-D65 inverse, the selected forward view, and selected display
+HDR 1000-nit Rec.2020-D65 inverse, the selected forward view, and selected display
 primaries, returning display-linear RGB to the existing SDR/PQ PNG encoder.
 The same path is used for the main image and loupe. If WebGPU is unavailable
 or fails validation, a fixed pool of two workers performs the identical WASM
@@ -478,7 +512,7 @@ unit declaration:
 3. If Scale ×2.03 is checked, treat the raster as 203-nit source units and
    multiply XYZ by 2.03; if unchecked, treat it as absolute 100-nit HDR units
    and pass physical XYZ through unchanged. Apply the fixed inverse ACES 2.0
-   HDR 1000 nits P3-D65 path, yielding canonical ACEScg.
+   HDR 1000 nits Rec.2020-D65 path, yielding canonical ACEScg.
 4. For normalized coordinates, divide unchecked absolute XYZ by 2.03 (the
    checked path is already in source units), then solve canonical J'/x'/y'.
 
@@ -505,7 +539,7 @@ Use the selected subset's unbiased covariance, a 1e-9 diagonal floor, and the
 rotated ellipse on the gamut slice; clip only at the viewport boundary.
 
 Separately average accepted samples in ACEScg. Convert that mean through the
-fixed HDR 1000 nits P3-D65 forward pair, divide by the fixed source scale, and
+fixed HDR 1000 nits Rec.2020-D65 forward pair, divide by the fixed source scale, and
 solve canonical J'/x'/y'. The resulting average marker is independent of the
 selected presentation view, is drawn with a persistent dim ring, and is added
 to both x'/y' and J' snapping. The image result never automatically moves the

@@ -3,7 +3,7 @@ import init, {
   new_bounded_display_preview,
   image_picker_analyze_ap0_scaled,
   image_picker_code_from_acescg,
-  image_picker_display_rgb_ap0_batch,
+  image_picker_display_rgb_ap0_batch_mode,
   picker_gpu_parameters,
   prepare,
   prepare_heic_pixels,
@@ -27,6 +27,7 @@ type ImageRequest = {
   appearanceToken?: number;
   view?: ViewId;
   scale203?: boolean;
+  desaturate?: boolean;
 };
 type TransformRenderer = "webgpu" | "wasm";
 
@@ -91,9 +92,9 @@ function ensureFallbackWorkers(): FallbackWorker[] {
   return workers;
 }
 
-async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, scale203: boolean): Promise<Float32Array> {
+async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, scale203: boolean, desaturate: boolean): Promise<Float32Array> {
   const workers = ensureFallbackWorkers().filter(entry => !entry.failed);
-  if (!workers.length) return image_picker_display_rgb_ap0_batch(pixels, view, scale203);
+  if (!workers.length) return image_picker_display_rgb_ap0_batch_mode(pixels, view, scale203, desaturate);
   const output = new Float32Array(pixels.length);
   const jobs: Promise<void>[] = [];
   for (let offset = 0, chunk = 0; offset < pixels.length; offset += CPU_BATCH_PIXELS * 3, chunk += 1) {
@@ -102,7 +103,7 @@ async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, scale203: 
     const backup = input.slice();
     const candidates = workers.filter(entry => !entry.failed);
     if (!candidates.length) {
-      output.set(image_picker_display_rgb_ap0_batch(input, view, scale203), offset);
+      output.set(image_picker_display_rgb_ap0_batch_mode(input, view, scale203, desaturate), offset);
       continue;
     }
     const slot = candidates[fallbackWorkerCursor++ % candidates.length];
@@ -113,15 +114,15 @@ async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, scale203: 
         // locally so a transient worker failure cannot corrupt row ordering.
         const converted = result.length === input.length
           ? result
-          : image_picker_display_rgb_ap0_batch(backup, view, scale203);
+          : image_picker_display_rgb_ap0_batch_mode(backup, view, scale203, desaturate);
         output.set(converted, offset);
         resolve();
       });
       try {
-        slot.worker.postMessage({ id, pixels: input.buffer, view, scale203 }, [input.buffer]);
+        slot.worker.postMessage({ id, pixels: input.buffer, view, scale203, desaturate }, [input.buffer]);
       } catch {
         slot.failed = true;
-        const converted = image_picker_display_rgb_ap0_batch(backup, view, scale203);
+        const converted = image_picker_display_rgb_ap0_batch_mode(backup, view, scale203, desaturate);
         slot.pending.delete(id);
         output.set(converted, offset);
         resolve();
@@ -132,12 +133,12 @@ async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, scale203: 
   return output;
 }
 
-async function displayRgbBatch(pixels: Float32Array, view: ViewId, scale203: boolean): Promise<Float32Array> {
+async function displayRgbBatch(pixels: Float32Array, view: ViewId, scale203: boolean, desaturate: boolean): Promise<Float32Array> {
   if (!pixels.length) return new Float32Array();
   if (!imageGpuDisabled && imageGpu.available) {
     try {
       imageGpuParameters ??= picker_gpu_parameters();
-      return await imageGpu.renderImage(imageGpuParameters, viewIndex(view), scale203, pixels);
+      return await imageGpu.renderImage(imageGpuParameters, viewIndex(view), scale203, desaturate, pixels);
     } catch {
       imageGpuDisabled = true;
     }
@@ -145,9 +146,9 @@ async function displayRgbBatch(pixels: Float32Array, view: ViewId, scale203: boo
   // Keep the fallback bounded and parallel. The WASM implementation is the
   // numerical reference when WebGPU is absent or fails validation.
   try {
-    return await cpuDisplayRgbBatch(pixels, view, scale203);
+    return await cpuDisplayRgbBatch(pixels, view, scale203, desaturate);
   } catch {
-    return image_picker_display_rgb_ap0_batch(pixels, view, scale203);
+    return image_picker_display_rgb_ap0_batch_mode(pixels, view, scale203, desaturate);
   }
 }
 
@@ -320,6 +321,7 @@ async function makePreview(
   prepared: Prepared,
   view: ViewId,
   scale203: boolean,
+  desaturate: boolean,
 ): Promise<{ png: Uint8Array; width: number; height: number; renderer: TransformRenderer }> {
   if (!prepared.boundedPreview) {
     const display = new_bounded_display_preview(prepared.width, prepared.height, 1600);
@@ -348,7 +350,7 @@ async function makePreview(
   const batchLength = 131_072 * 3;
   for (let offset = 0; offset < source.pixels.length; offset += batchLength) {
     const end = Math.min(source.pixels.length, offset + batchLength);
-    const converted = await displayRgbBatch(source.pixels.subarray(offset, end), view, scale203);
+    const converted = await displayRgbBatch(source.pixels.subarray(offset, end), view, scale203, desaturate);
     rgb.set(converted, offset);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
@@ -435,17 +437,17 @@ async function prepareImage(message: ImageRequest, bytes: Uint8Array): Promise<v
     try { previous.image.free(); } catch { /* best effort */ }
   }
   preparedById.set(message.id, { image, width, height, summary });
-  const preview = await makePreview(preparedById.get(message.id)!, message.view ?? 1, message.scale203 ?? true);
-  scope.postMessage({ kind: "ready", id: message.id, generation: message.generation ?? 0, width, height, previewWidth: preview.width, previewHeight: preview.height, summary, view: message.view ?? 1, scale203: message.scale203 ?? true, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
+  const preview = await makePreview(preparedById.get(message.id)!, message.view ?? 0, message.scale203 ?? true, message.desaturate ?? false);
+  scope.postMessage({ kind: "ready", id: message.id, generation: message.generation ?? 0, width, height, previewWidth: preview.width, previewHeight: preview.height, summary, view: message.view ?? 0, scale203: message.scale203 ?? true, desaturate: message.desaturate ?? false, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
 }
 
 async function previewImage(message: ImageRequest): Promise<void> {
   const prepared = preparedById.get(message.id);
   if (!prepared) throw new Error("The image is not prepared; load it again.");
-  const preview = await makePreview(prepared, message.view ?? 1, message.scale203 ?? true);
+  const preview = await makePreview(prepared, message.view ?? 0, message.scale203 ?? true, message.desaturate ?? false);
   if ((latestGenerationById.get(message.id) ?? message.generation ?? 0) !== (message.generation ?? 0)) return;
   if ((latestAppearanceTokenById.get(message.id) ?? message.appearanceToken ?? 0) !== (message.appearanceToken ?? 0)) return;
-  scope.postMessage({ kind: "preview", id: message.id, generation: message.generation ?? 0, appearanceToken: message.appearanceToken ?? 0, width: prepared.width, height: prepared.height, previewWidth: preview.width, previewHeight: preview.height, view: message.view ?? 1, scale203: message.scale203 ?? true, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
+  scope.postMessage({ kind: "preview", id: message.id, generation: message.generation ?? 0, appearanceToken: message.appearanceToken ?? 0, width: prepared.width, height: prepared.height, previewWidth: preview.width, previewHeight: preview.height, view: message.view ?? 0, scale203: message.scale203 ?? true, desaturate: message.desaturate ?? false, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
 }
 
 async function previewLatest(): Promise<void> {
@@ -514,13 +516,13 @@ async function sampleImage(message: ImageRequest): Promise<void> {
   const loupeWidth = maxX - minX + 1;
   const loupeHeight = maxY - minY + 1;
   const loupeRgb = loupe.length
-    ? await displayRgbBatch(new Float32Array(loupe), message.view ?? 1, message.scale203 ?? true)
+    ? await displayRgbBatch(new Float32Array(loupe), message.view ?? 0, message.scale203 ?? true, message.desaturate ?? false)
     : new Float32Array();
   const loupePng = loupeRgb.length
-    ? encodeLinearRgbPng(message.view ?? 1, loupeWidth, loupeHeight, loupeRgb)
+    ? encodeLinearRgbPng(message.view ?? 0, loupeWidth, loupeHeight, loupeRgb)
     : new Uint8Array();
   if ((latestSampleTokenById.get(message.id) ?? message.token ?? 0) !== (message.token ?? 0)) return;
-  scope.postMessage({ kind: "sample", id: message.id, generation: message.generation ?? 0, token: message.token ?? 0, x: cx, y: cy, minX, minY, width: loupeWidth, height: loupeHeight, loupe: loupePng.buffer, points, mean, meanAcescg, meanCode, rejected, total: points.length + rejected, view: message.view ?? 1, scale203: message.scale203 ?? true }, [loupePng.buffer]);
+  scope.postMessage({ kind: "sample", id: message.id, generation: message.generation ?? 0, token: message.token ?? 0, x: cx, y: cy, minX, minY, width: loupeWidth, height: loupeHeight, loupe: loupePng.buffer, points, mean, meanAcescg, meanCode, rejected, total: points.length + rejected, view: message.view ?? 0, scale203: message.scale203 ?? true, desaturate: message.desaturate ?? false }, [loupePng.buffer]);
 }
 
 async function sampleLatest(): Promise<void> {

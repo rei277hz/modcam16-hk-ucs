@@ -10,18 +10,26 @@ modCAM16-HK/Painter coordinates:
 The `x'` and `y'` channels are Cartesian coordinates around `0.5`; they encode
 the shader's logarithmic saturation radius using
 `(x, y) = (-R(s) sin(h), R(s) cos(h))`, and the valid domain is their unit disk.
-The square viewport has three aligned layers: a checkerboard canvas, a
-selected-view RGBA PNG gamut slice, and a transparent overlay canvas containing
-the ColorChecker dots/rings, neutral cross, and picked marker. WebGPU computes
+The square viewport has four aligned layers: a checkerboard canvas, a
+selected-view RGBA PNG gamut slice, a transparent 1024x1024 ColorChecker-dot
+PNG, and a transparent overlay canvas containing rings, the neutral cross, and
+the picked marker. WebGPU computes
 only the slice pixel field when available; a WASM batch path provides the
 deterministic fallback. Both canvases always use 512x512 backing stores. A
 confirmed WebGPU renderer keeps the slice PNG at 512x512; only the CPU/WASM
 fallback may use a temporary 64x64 slice during J' interaction. Coordinates
-always determine source
-P3 display-linear RGB, scaled once by 2.03 before the inverse **ACES 2.0 HDR
-1000 nits (P3 D65)** view produces scene-linear ACEScg. The selected forward
+always determine authoring Rec.2020 display-linear RGB, scaled once by 2.03
+before the inverse **ACES 2.0 HDR
+1000 nits (Rec.2020)** view produces scene-linear ACEScg. The selected forward
 view supplies the slice's display-linear pixels and matching PNG encoding. A
 view change does not change coordinates, ACEScg, Background, or snapping.
+
+Full Rec.2020 authoring is enabled by default; disabling it adds a P3
+`[0, 10 / 2.03]` per-channel cube requirement to authored picker/slice
+availability. The Desaturate appearance toggle is available in Full mode and preserves canonical
+coordinates, readouts, snapping, and image statistics.
+Desaturate clips its reconstructed Rec.2020 appearance RGB to `[0, 10 / 2.03]`
+before inverse ACES, so it never changes the availability mask.
 
 Click the preview to select SDR Rec.709, SDR P3-D65, HDR P3-D65, or HDR
 Rec.2020. The whole swatch/surround is one locally generated 256×256 PNG:
@@ -32,7 +40,7 @@ There is no separate Mode row or direct Rec.709 mode.
 
 The 203-nit appearance context is retained. J' maps linearly as
 `J_HK = J' * 217.2768649129496`, ending at physical 1000-nit white. The fixed
-100-nit locator is `J' = 0.34990637148068954`; source P3 `(1,1,1)` is 203 nits
+100-nit locator is `J' = 0.34990637148068954`; authoring Rec.2020 `(1,1,1)` is 203 nits
 and has `J' = 0.4602422813863053`. This intentionally replaces the old shader
 endpoint; fitted-radius X/Y orientation and meaning are unchanged.
 

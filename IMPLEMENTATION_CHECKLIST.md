@@ -2,14 +2,15 @@
 
 Live implementation and verification record. Update this document and
 FINAL_BEHAVIOR.md together when findings change the contract. Older completed
-five-profile work is superseded by the fixed HDR-P3 browser pipeline below;
+five-profile work is superseded by the fixed HDR-Rec.2020 authoring pipeline
+below, with independent presentation views;
 legacy Rust APIs remain covered as regression code only.
 
 ## Scope and workspace
 
 - [x] Update both working documents before further implementation inspection.
-- [x] Continue on `feat/image-color-locator`, preserving the prior uncommitted
-      wheel, acceleration, snapping, and responsive-layout work.
+- [x] Continue on `feat/rec2020-authoring-gamut`, preserving the prior
+      image-locator, wheel, acceleration, snapping, and responsive-layout work.
 - [x] Use Node 26 from fnm; no unrelated commit, push, or sibling shader edits.
 - [x] Keep build/runtime self-contained; no sibling repository dependency.
 - [x] Remove contradictory old profile-switch, direct-mode, and CSS-preview
@@ -18,14 +19,16 @@ legacy Rust APIs remain covered as regression code only.
 ## Canonical numerical pipeline
 
 - [x] Implement dedicated picker_* WASM exports in src/wasm/color_core/src/picker.rs.
-- [x] Decode J'/x'/y' to fixed linear P3-D65; scale by 2.03 once; inverse HDR P3.
+- [x] Decode J'/x'/y' to fixed linear Rec.2020-D65 authoring RGB; scale by
+      2.03 once; inverse HDR Rec.2020.
 - [x] Selected view changes presentation only, with real Rec.2020 output matrix.
 - [x] Keep the 203-nit appearance context and independently derive the physical
       1000-nit J_HK endpoint 217.2768649129496.
 - [x] Use the 203-nit ruler/snap reference J'=0.4602422813863053; remove the
       former 100-nit browser locator.
 - [x] Keep x/y orientation (-R sin h, R cos h) and source-fixed ColorChecker.
-- [x] Mark negative/over-peak foreground RGB unavailable before inverse clipping.
+- [x] Mark negative/over-peak foreground Rec.2020 authoring RGB unavailable
+      before inverse clipping (authored-unit peak `10/2.03`).
 - [x] Route Background through the same fixed inverse and selected forward view.
 - [x] Expose normalized Background J' position in the 0..1 UI.
 - [x] Derive the surround from the fixed source path without a separate
@@ -136,7 +139,7 @@ legacy Rust APIs remain covered as regression code only.
 
 - [x] Use the official OCIO GPU table payload/equation ordering represented by
       `generate_aces_tables.py`; add provenance and numerical parity checks.
-- [x] Add a reusable WebGPU AP0 → ACEScg → fixed HDR-P3 inverse → selected
+- [x] Add a reusable WebGPU AP0 → ACEScg → fixed HDR-Rec.2020 inverse → selected
       forward-view → display-linear RGB backend for image previews and loupes.
 - [x] Cache the prepared/bounded AP0 preview input and GPU resources so view
       changes do not repeat source decoding or image interpretation.
@@ -259,7 +262,7 @@ legacy Rust APIs remain covered as regression code only.
       documents before implementation inspection.
 - [x] Record the resolved product contract: continuous sampling, interpreted
       preview, visible bottom stack, fit-all mobile sizing, persistent loupe,
-      fixed HDR-P3 average mapping, and average J'/XY snapping.
+      fixed HDR-Rec.2020 average mapping, and average J'/XY snapping.
 - [x] Keep the image panel visible in an empty state with a Load image action;
       stack it below the picker without document scrolling.
 - [x] Reuse the decompose decoder behavior for DNG, EXR, JPEG/JPG, PNG, HEIC,
@@ -281,7 +284,7 @@ legacy Rust APIs remain covered as regression code only.
 - [x] Continuously sample native pixels in the exact circular 3 px neighborhood;
       report accepted, rejected, and total counts.
 - [x] Convert every accepted sample through interpreted linear AP0, ACEScg,
-      fixed inverse HDR P3-D65, and canonical J'/x'/y'.
+      fixed inverse HDR Rec.2020-D65, and canonical J'/x'/y'.
 - [x] Add the per-image scale-by-2.03 override (default on for SDR, off for
       EXR/DNG and embedded PQ/HLG sources), applying it only to image/loupe
       appearance while keeping analysis fixed.
@@ -295,13 +298,49 @@ legacy Rust APIs remain covered as regression code only.
 - [x] Implement deterministic Fast-MCD: h=ceil(n/2), max 32 deterministic
       seeds, five C-steps, determinant selection, tie-breaks, covariance floor,
       and 95% chi-square ellipse.
-- [x] Compute the ACEScg arithmetic mean, map it through fixed HDR P3-D65
+- [x] Compute the ACEScg arithmetic mean, map it through fixed HDR Rec.2020-D65
       forward, solve canonical J'/x'/y', and add it to XY and J' snapping.
 - [x] Keep image analysis independent of picker movement; persist panel,
       loupe, crosshair, ellipse, statistics, and average marker after confirm.
 - [x] Add decoder, worker, statistics, stale-response, loupe, interaction, and
       desktop/mobile browser regressions.
 - [x] Validate absolute-HDR (unchecked Scale ×2.03) PNG samples against a 10.0
-      P3 peak with 1e-4 coordinate/5e-5 RGB boundary tolerance for f32/PQ
-      rounding; generated HDR P3 slices at J′=0.8 sample 29 accepted pixels
+      Rec.2020 authoring peak with 1e-4 coordinate/5e-5 RGB boundary tolerance for f32/PQ
+      rounding; generated HDR Rec.2020-authoring slices at J′=0.8 sample 29
+      accepted pixels
       instead of reporting 29 unavailable.
+- [x] Replace every canonical authoring-validity matrix with XYZ→Rec.2020,
+      including picker evaluation, slice CPU/GPU masks, ColorChecker
+      availability, encoded imports, and image-locator analysis/mean solving.
+- [x] Preserve the fixed HDR-Rec.2020 inverse, selected presentation transforms,
+      PNG metadata, and all UI behavior; only the authoring path changes.
+- [x] Add regression colors that are outside P3 but inside Rec.2020 and colors
+      outside Rec.2020, asserting valid/black behavior and CPU/GPU mask parity.
+
+## Full Rec.2020 and appearance controls
+
+- [x] Update both working documents before implementation (this execution).
+- [x] Add a default-on Full Rec.2020 toggle above the gamut slice.
+- [x] Add a Desaturate toggle disabled while Full Rec.2020 is off, retaining
+      its checked state for restoration.
+- [x] Keep Full-off authored validity inside both the Rec.2020 and linear P3
+      cubes: every channel must be finite and within `[0, 10 / 2.03]`.
+- [x] Keep image analysis, accepted samples, ACEScg means, image targets, and
+      ColorChecker availability Rec.2020-based regardless of Full mode.
+- [x] Make HDR Rec.2020 view (ID 0) the initial presentation view.
+- [x] Apply appearance-only center-relative 0.75 x'/y' scaling for Desaturate
+      to slice, preview, ColorChecker fills, image preview, and loupe.
+- [x] Clip desaturated intermediate Rec.2020 RGB to `[0, 10 / 2.03]` before
+      inverse ACES in every colored appearance path; never let this clipping
+      change the canonical availability mask.
+- [x] Regress ACEScg `(25.2811, 29.6013, 0.0422)`: it remains available and
+      visibly non-black after Desaturate, with matching WASM/WebGPU alpha.
+- [x] Keep the original authored validity mask, snapping, readouts, and UI
+      overlays unchanged under Desaturate; only non-finite appearance inputs
+      are black.
+- [x] Render selected-view/desaturated ColorChecker fills as a transparent
+      1024x1024 RGBA PNG layer above the slice and below the overlay canvas.
+- [x] Extend worker messages, cache keys, stale-response checks, WASM wrappers,
+      and WebGPU uniforms for Full/Desaturate flags.
+- [x] Add Rust, PNG, WebGPU/WASM parity, and browser regressions for all flag
+      combinations and the 360x645 DPR-3 layout.
