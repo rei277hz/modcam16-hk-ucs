@@ -45,6 +45,8 @@
                 </div>
                 <span id="j-reference-tick" class="j-reference-tick"></span>
                 <span id="j-stick" class="j-patch-tick" hidden></span>
+                <span id="j-image-stick" class="j-image-tick" hidden></span>
+                <span id="background-stick" class="j-background-tick" hidden aria-hidden="true"></span>
                 <span id="j-current-indicator" class="j-current-indicator"></span>
               </div>
             </div>
@@ -123,32 +125,61 @@
               aria-hidden="true"
             ></span>
           </div>
-          <div class="background-control">
-            <label for="background-brightness"
-              >Background J'
-              <span class="control-value" id="background-brightness-value"
-                >0.150</span
-              ></label
-            >
-            <div class="range-wrap">
-              <span
-                id="background-stick"
-                class="stick-marker"
-                hidden
-                aria-hidden="true"
-              ></span>
-              <input
-                id="background-brightness"
-                type="range"
-                min="0"
-                max="1"
-                step="any"
-                value="0.15"
-                aria-label="Background J prime, 0 to 1"
-              />
-            </div>
+        </div>
+      </section>
+      <section id="image-panel" class="image-panel" data-ready="false" aria-labelledby="image-heading">
+        <div class="image-toolbar">
+          <h2 id="image-heading">Image color locator</h2>
+          <input id="image-file-input" type="file" hidden accept=".dng,.DNG,.exr,.jpg,.jpeg,.png,.heic,.heif,image/x-adobe-dng,image/dng,image/png,image/jpeg,image/heif,image/heic" />
+          <div class="image-toolbar-actions">
+            <button id="image-load" class="action-button" type="button">Load image</button>
+            <button id="image-options" class="action-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="image-options-dialog" disabled>Image Options</button>
           </div>
         </div>
+        <p id="image-status" class="image-status" role="status">Load an image to locate its colors.</p>
+        <dialog id="image-options-dialog" class="image-options-dialog" aria-labelledby="image-options-heading">
+          <form method="dialog" class="image-options-card">
+            <div class="image-options-heading"><h3 id="image-options-heading">Image Options</h3><button id="image-options-close" class="action-button" value="cancel" type="submit">Close</button></div>
+            <p id="image-interpretation-warning" class="image-options-warning" role="status" hidden></p>
+            <div class="image-controls">
+          <label class="image-field image-scale-field"><input id="image-scale-203" type="checkbox" checked /> <span>Scale linear source ×2.03 before HDR inverse</span></label>
+          <label id="image-gamut-field" class="image-field" hidden><span>Primaries</span><select id="image-gamut">
+            <option value="embedded">Use embedded interpretation</option>
+            <option value="" disabled>Select primaries manually…</option>
+            <option value="Rec.709 / sRGB">sRGB (Rec.709)</option>
+            <option value="Display P3 / P3-D65">Display P3 (P3-D65)</option>
+            <option value="Rec.2020">Rec.2020</option>
+            <option value="Adobe RGB">Adobe RGB</option>
+            <option value="ACEScg">ACEScg</option>
+            <option value="ACES2065-1">ACES2065-1</option>
+          </select></label>
+          <label id="image-transfer-field" class="image-field" hidden><span>Transfer</span><select id="image-transfer">
+            <option value="Linear">Linear</option>
+            <option value="sRGB">sRGB</option>
+            <option value="Gamma 1.8">Gamma 1.8</option>
+            <option value="Gamma 2.2">Gamma 2.2</option>
+            <option value="Gamma 2.4 / BT.1886">Gamma 2.4 / BT.1886</option>
+            <option value="BT.709 / BT.2020">BT.709 / BT.2020</option>
+            <option value="PQ / ST 2084">PQ / ST 2084</option>
+            <option value="HLG / BT.2100">HLG / BT.2100</option>
+          </select></label>
+            </div>
+          </form>
+        </dialog>
+        <div class="image-row">
+          <img id="image-loupe" width="192" height="192" alt="Pixel loupe" />
+          <div id="image-viewport" class="image-viewport" data-ready="false">
+            <img id="image-preview" alt="Loaded source image" />
+            <canvas id="image-overlay" width="512" height="512" aria-label="Image color locator"></canvas>
+          </div>
+          <div class="image-zoom-controls" aria-label="Image zoom">
+            <button type="button" class="action-button image-zoom-button" data-image-zoom="1" aria-pressed="false">1x</button>
+            <button type="button" class="action-button image-zoom-button" data-image-zoom="2" aria-pressed="true">2x</button>
+            <button type="button" class="action-button image-zoom-button" data-image-zoom="5" aria-pressed="false">5x</button>
+          </div>
+        </div>
+        <div id="image-transform-banner" class="image-transform-banner" role="status" hidden>Applying display transform…</div>
+        <p id="image-stats" class="image-stats" role="status"></p>
       </section>
       <footer class="app-footer">
         * Fixed HDR P3 authoring. Click the preview to change its view.

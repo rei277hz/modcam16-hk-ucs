@@ -7,9 +7,31 @@ const SOURCE_PEAK: f64 = 10.0 / SOURCE_SCALE;
 const SOURCE_BACKGROUND_MAX: f64 = 1.0;
 // modCAM16-HK of neutral source P3 = 1000/203, independently checked in Python.
 const PICKER_J_PEAK: f64 = 217.2768649129496;
+// Inverse of the decomposition module's D65-XYZ -> ACES2065-1 matrix.
+// Prepared image pixels are linear AP0, so this recovers source display XYZ
+// before the fixed HDR-P3 inverse is applied.
+const AP0_TO_XYZ_D65: [[f64; 3]; 3] = [
+    [0.938279841815694, -0.004451445665284, 0.016627526998033],
+    [0.337368891456768, 0.729521570671540, -0.066890458295250],
+    [0.001173949539939, -0.003710705591141, 1.091594511691737],
+];
+#[cfg(test)]
+const XYZ_D65_TO_AP0: [[f64; 3]; 3] = [
+    [1.0634955, 0.00640891, -0.01580679],
+    [-0.49207413, 1.3682234, 0.09133709],
+    [-0.00281646, 0.00464417, 0.91641857],
+];
 
 fn source_valid(rgb: [f64; 3]) -> bool {
     finite3(rgb) && min3(rgb) >= -1.0e-8 && max3(rgb) <= SOURCE_PEAK + 1.0e-7
+}
+
+fn source_valid_with_peak(rgb: [f64; 3], peak: f64) -> bool {
+    // Prepared rasters are f32 and may have passed through a 16-bit PQ
+    // round-trip plus two color-space matrices. Allow the resulting few ulps
+    // of upper-bound overshoot while still rejecting negative or genuinely
+    // above-peak source values.
+    finite3(rgb) && min3(rgb) >= -1.0e-8 && max3(rgb) <= peak + 5.0e-5
 }
 
 fn source_sample(code: [f64; 3]) -> Sample {
@@ -95,6 +117,118 @@ pub fn picker_from_encoded(red: f64, green: f64, blue: f64) -> Vec<f64> {
     vec![if valid { 1.0 } else { 0.0 }, code[0], code[1], code[2]]
 }
 
+/// Convert one prepared ACES2065-1/AP0 sample to the canonical ACEScg value
+/// and normalized J'/x'/y' coordinates used by the image locator. Prepared
+/// image rasters from the reference decoder are already linear AP0, so this
+/// is numerically the same fixed HDR-P3 inverse path used for authored picker
+/// coordinates without reinterpreting the source a second time.
+///
+/// Return layout: [valid, ACEScg R/G/B, J', x', y'].
+#[wasm_bindgen]
+pub fn picker_analyze_ap0(red: f64, green: f64, blue: f64) -> Vec<f64> {
+    // Analysis is canonical and independent of the appearance-only scale
+    // toggle.  The fixed authoring path always applies 2.03; the worker uses
+    // `scale203` only when rendering image/loupe display pixels.
+    picker_analyze_ap0_scaled(red, green, blue, true)
+}
+
+/// Analyze a prepared AP0 sample, optionally applying the 2.03 SDR-to-HDR
+/// source scale before the fixed HDR-P3 inverse.
+#[wasm_bindgen]
+pub fn picker_analyze_ap0_scaled(red: f64, green: f64, blue: f64, scale203: bool) -> Vec<f64> {
+    let ap0 = [red, green, blue];
+    // Prepared image rasters are either in the picker source unit (203 nits
+    // per P3 unit) or absolute HDR/100-nit units. Normalize the latter back
+    // to the canonical source unit for J'/x'/y' and validity, while passing
+    // physical 100-nit XYZ unchanged to the fixed HDR inverse.
+    let raster_xyz = mat(&AP0_TO_XYZ_D65, ap0);
+    let source_xyz = if scale203 {
+        raster_xyz
+    } else {
+        raster_xyz.map(|v| v / SOURCE_SCALE)
+    };
+    let raster_rgb = mat(&XYZ_TO_P3, raster_xyz);
+    let source_peak = if scale203 { SOURCE_PEAK } else { 10.0 };
+    let (code, domain_valid) =
+        super::scaled_jhk_from_xyz_with_tolerance(source_xyz, PICKER_J_PEAK, 1.0e-4);
+    let acescg = if finite3(raster_xyz) && source_valid_with_peak(raster_rgb, source_peak) {
+        let inverse_xyz = if scale203 {
+            raster_xyz.map(|v| v * SOURCE_SCALE)
+        } else {
+            raster_xyz
+        };
+        aces_output::inverse(2, inverse_xyz)
+    } else {
+        [f64::NAN; 3]
+    };
+    let valid = finite3(ap0)
+        && finite3(raster_xyz)
+        && finite3(acescg)
+        && domain_valid
+        && source_valid_with_peak(raster_rgb, source_peak);
+    let mut out = Vec::with_capacity(7);
+    out.push(if valid { 1.0 } else { 0.0 });
+    out.extend(acescg);
+    out.extend(code);
+    out
+}
+
+/// Convert prepared AP0 into selected-view display-linear RGB. This is the
+/// appearance-only path used by loaded-image and loupe previews.
+#[wasm_bindgen]
+pub fn picker_display_rgb_ap0(
+    red: f64,
+    green: f64,
+    blue: f64,
+    view: u32,
+    scale203: bool,
+) -> Vec<f64> {
+    let source_xyz = mat(&AP0_TO_XYZ_D65, [red, green, blue]);
+    let scale = if scale203 { SOURCE_SCALE } else { 1.0 };
+    let acescg = aces_output::inverse(2, source_xyz.map(|v| v * scale));
+    view_rgb(view, acescg).to_vec()
+}
+
+/// Batch appearance conversion for image previews and loupes.  The optional
+/// 2.03 multiplier belongs exclusively to this display path; callers doing
+/// image statistics should continue to use `picker_analyze_ap0` so changing
+/// the appearance toggle cannot change the sampled-color result.
+#[wasm_bindgen]
+pub fn picker_display_rgb_ap0_batch(pixels: &[f32], view: u32, scale203: bool) -> Vec<f32> {
+    if pixels.len() % 3 != 0 {
+        return Vec::new();
+    }
+    let mut output = Vec::with_capacity(pixels.len());
+    for pixel in pixels.chunks_exact(3) {
+        let rgb = picker_display_rgb_ap0(
+            pixel[0] as f64,
+            pixel[1] as f64,
+            pixel[2] as f64,
+            view,
+            scale203,
+        );
+        output.extend(rgb.into_iter().map(|v| v as f32));
+    }
+    output
+}
+
+/// Solve canonical normalized J′/x′/y′ coordinates from an averaged ACEScg
+/// scene-linear colour.  Image-locator averages are intentionally performed
+/// in ACEScg before this nonlinear forward solve.
+#[wasm_bindgen]
+pub fn picker_code_from_acescg(red: f64, green: f64, blue: f64) -> Vec<f64> {
+    let acescg = [red, green, blue];
+    let xyz = aces_output::forward(2, acescg);
+    let source_xyz = xyz.map(|v| v / SOURCE_SCALE);
+    let source_rgb = mat(&XYZ_TO_P3, source_xyz);
+    let (code, domain_valid) = scaled_jhk_from_xyz(source_xyz, PICKER_J_PEAK);
+    let valid = finite3(acescg) && finite3(xyz) && domain_valid && source_valid(source_rgb);
+    let mut out = Vec::with_capacity(4);
+    out.push(if valid { 1.0 } else { 0.0 });
+    out.extend(code);
+    out
+}
+
 /// Fixed source slice: view switches never alter the mask or its coordinates.
 #[wasm_bindgen]
 pub fn picker_render_rows(
@@ -168,8 +302,16 @@ pub fn picker_render_linear_rows(
     let mut output = vec![0.0_f32; (end - start) * width * 4];
     for y in start..end {
         for x in 0..width {
-            let sx = if width == 1 { 0.5 } else { x as f64 / (width - 1) as f64 };
-            let sy = if height == 1 { 0.5 } else { 1.0 - y as f64 / (height - 1) as f64 };
+            let sx = if width == 1 {
+                0.5
+            } else {
+                x as f64 / (width - 1) as f64
+            };
+            let sy = if height == 1 {
+                0.5
+            } else {
+                1.0 - y as f64 / (height - 1) as f64
+            };
             let sample = source_sample([j, sx, sy]);
             let index = ((y - start) * width + x) * 4;
             if sample.valid {
@@ -257,6 +399,62 @@ mod tests {
         let invalid = picker_evaluate(2, 0.9, 0.01, 0.01, 0.15);
         assert_eq!(invalid[0], 0.0);
         assert!(invalid[1..4].iter().all(|v| v.is_nan()));
+    }
+
+    #[test]
+    fn image_scale_changes_display_only_and_not_canonical_analysis() {
+        let ap0 = [0.18, 0.07, 0.03];
+        let analysis = picker_analyze_ap0(ap0[0], ap0[1], ap0[2]);
+        let scaled_analysis = picker_analyze_ap0_scaled(ap0[0], ap0[1], ap0[2], true);
+        assert_eq!(analysis, scaled_analysis);
+        assert_eq!(
+            analysis,
+            picker_analyze_ap0_scaled(ap0[0], ap0[1], ap0[2], true)
+        );
+        // The two flags describe different raster units.  Feeding the
+        // corresponding physical representations must recover the same
+        // canonical color (the raw AP0 value above is the checked 203-nit
+        // representation; the unchecked representation is divided by 2.03).
+        let unscaled_physical = ap0.map(|v| v * SOURCE_SCALE);
+        let unscaled_physical_analysis = picker_analyze_ap0_scaled(
+            unscaled_physical[0],
+            unscaled_physical[1],
+            unscaled_physical[2],
+            false,
+        );
+        for i in 1..7 {
+            assert!(
+                (scaled_analysis[i] - unscaled_physical_analysis[i]).abs() < 2.0e-8,
+                "analysis channel {i}: {} vs {}",
+                scaled_analysis[i],
+                unscaled_physical_analysis[i]
+            );
+        }
+        assert_eq!(analysis, scaled_analysis);
+        let scaled = picker_display_rgb_ap0(ap0[0], ap0[1], ap0[2], 4, true);
+        let unscaled = picker_display_rgb_ap0(ap0[0], ap0[1], ap0[2], 4, false);
+        assert!(scaled
+            .iter()
+            .zip(unscaled.iter())
+            .any(|(a, b)| (a - b).abs() > 1.0e-6));
+    }
+
+    #[test]
+    fn unchecked_hdr_white_is_valid_but_above_peak_is_rejected() {
+        // AP0 encoding of absolute P3 white at the HDR 1000-nit peak. The
+        // unchecked raster uses absolute 100-nit units, so 10.0 is the valid
+        // upper bound rather than the legacy 10/2.03 source-unit bound.
+        let p3_white = [10.0; 3];
+        let ap0_white = mat(&XYZ_D65_TO_AP0, mat(&P3_TO_XYZ, p3_white));
+        let valid = picker_analyze_ap0_scaled(ap0_white[0], ap0_white[1], ap0_white[2], false);
+        assert_eq!(valid[0], 1.0);
+        // The decomposition path stores AP0 as f32.  This rounded white
+        // models the small matrix/PQ boundary error seen in prepared PNGs.
+        let rounded = picker_analyze_ap0_scaled(9.999999, 10.0, 9.999999, false);
+        assert_eq!(rounded[0], 1.0);
+        let above = ap0_white.map(|v| v * 1.001);
+        let invalid = picker_analyze_ap0_scaled(above[0], above[1], above[2], false);
+        assert_eq!(invalid[0], 0.0);
     }
 
     #[test]

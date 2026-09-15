@@ -22,7 +22,7 @@ function expectedSample(value, hdr) {
 
 test("physical white scale is independently derived with the 203-nit appearance context", () => {
   close(J_HK_PEAK, oracle.peak_jhk, 1e-9, "1000-nit JHK");
-  close(J_REFERENCE_WHITE, oracle.reference_j, 1e-12, "100-nit locator");
+  close(J_REFERENCE_WHITE, 100 / J_HK_PEAK, 1e-12, "203-nit reference locator");
   close(encodePq(100), 0.5080784215, 1e-10, "ST2084 100 nits");
   close(encodePq(1000), 0.7518270962, 1e-10, "ST2084 1000 nits");
 });
