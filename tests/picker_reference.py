@@ -48,7 +48,10 @@ def neutral_jhk(nits):
 
 
 PEAK = neutral_jhk(1000)
-REFERENCE_J = neutral_jhk(100) / PEAK
+# The browser ruler marks the 203-nit appearance white.  In this fixed
+# appearance context that white has J_HK=100; the former 100-nit locator was
+# an obsolete pre-2.03 convention.
+REFERENCE_J = neutral_jhk(203) / PEAK
 
 
 def rgb_matrix(primaries):

@@ -11,8 +11,9 @@
     "test:png": "node --experimental-strip-types --test tests/preview_png.test.mjs",
     "test:browser": "node --test tests/picker_browser.test.mjs",
     "build:wasm": "wasm-pack build src/wasm/color_core --target web --release --out-dir ../pkg --no-pack",
+    "build:wasm:decomposition": "wasm-pack build src/wasm/decomposition --target web --release --out-dir ../decomposition_pkg --no-pack",
     "dev": "vite",
-    "build": "npm run build:wasm && vite build",
+    "build": "npm run build:wasm && npm run build:wasm:decomposition && vite build",
     "preview": "vite preview"
   },
   "devDependencies": {
@@ -21,6 +22,7 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
-    "fflate": "^0.8.3"
+    "fflate": "^0.8.3",
+    "libheif-js": "^1.23.2"
   }
 }

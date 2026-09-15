@@ -10,7 +10,7 @@
 //! default ``AppearanceConfig``.
 
 pub mod aces_output;
-mod picker;
+pub mod picker;
 
 use wasm_bindgen::prelude::*;
 
@@ -560,6 +560,14 @@ fn normalized_jhk_from_xyz(profile: u32, xyz: [f64; 3]) -> ([f64; 3], bool) {
 }
 
 fn scaled_jhk_from_xyz(model_xyz: [f64; 3], scale: f64) -> ([f64; 3], bool) {
+    scaled_jhk_from_xyz_with_tolerance(model_xyz, scale, 1.0e-10)
+}
+
+fn scaled_jhk_from_xyz_with_tolerance(
+    model_xyz: [f64; 3],
+    scale: f64,
+    tolerance: f64,
+) -> ([f64; 3], bool) {
     let (_, chroma, hue, j_hk) = attributes(normalized_model(2), model_xyz);
     let j_a = (j_hk * j_hk - HK_COEFFICIENT * chroma).max(0.0).sqrt();
     let raw_saturation = if j_a > 0.0 && chroma.is_finite() {
@@ -581,13 +589,14 @@ fn scaled_jhk_from_xyz(model_xyz: [f64; 3], scale: f64) -> ([f64; 3], bool) {
         0.5 + 0.5 * radius * radians.cos(),
     ];
     let valid = raw_j.is_finite()
-        && (0.0..=1.0).contains(&raw_j)
+        && raw_j >= -tolerance
+        && raw_j <= 1.0 + tolerance
         && raw_saturation.is_finite()
         && raw_saturation >= 0.0
         && chroma.is_finite()
         && chroma >= -1.0e-10
         && raw_radius.is_finite()
-        && raw_radius <= 1.0 + 1.0e-10;
+        && raw_radius <= 1.0 + tolerance;
     (code, valid)
 }
 

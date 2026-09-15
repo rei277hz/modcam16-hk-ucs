@@ -2,9 +2,9 @@ import "./style.css";
 import { VIEW_IDS, VIEW_NAMES, type ViewId } from "./preview_png";
 import {
   J_REFERENCE_WHITE,
+  J_SNAP_DISTANCE,
   PATCH_ENTRY_RADIUS,
   ROLLING_BALL_SENSITIVITY,
-  backgroundFromSlider,
   canvasPoint,
   clamp01,
   nearestJSnapTarget,
@@ -15,6 +15,8 @@ import {
   rollingWheelDelta,
   projectSnapCode,
   slicePoint,
+  covarianceEllipse,
+  ellipsePoint,
 } from "./picker_math";
 
 const FULL = 512;
@@ -54,7 +56,8 @@ type Patch = {
 };
 type SnapTarget =
   | { kind: "neutral"; x: number; y: number }
-  | { kind: "patch"; index: number; x: number; y: number; j: number };
+  | { kind: "patch"; index: number; x: number; y: number; j: number }
+  | { kind: "average"; x: number; y: number };
 type RenderResponse = {
   kind: "slice";
   id: number;
@@ -112,8 +115,6 @@ const jWheelRoller = $(".j-wheel-roller") as HTMLElement;
 const jReferenceTick = $("#j-reference-tick") as HTMLElement;
 const jCurrentIndicator = $("#j-current-indicator") as HTMLElement;
 const jNumber = $("#j-number") as HTMLInputElement;
-const backgroundRange = $("#background-brightness") as HTMLInputElement;
-const backgroundValue = $("#background-brightness-value") as HTMLElement;
 const backgroundStick = $("#background-stick") as HTMLElement;
 const preview = $("#preview") as HTMLButtonElement;
 let previewImage = $("#preview-image") as HTMLImageElement;
@@ -123,6 +124,27 @@ const copyValue = $("#copy-value") as HTMLButtonElement;
 const setValue = $("#set-value") as HTMLButtonElement;
 const checkerName = $("#colorchecker-name") as HTMLElement;
 const jStick = $("#j-stick") as HTMLElement;
+const jImageStick = $("#j-image-stick") as HTMLElement;
+const imageFileInput = $("#image-file-input") as HTMLInputElement;
+const imagePanel = $("#image-panel") as HTMLElement;
+const imagePreview = $("#image-preview") as HTMLImageElement;
+const imageViewport = $("#image-viewport") as HTMLElement;
+const imageOverlay = $("#image-overlay") as HTMLCanvasElement;
+const imageLoupe = $("#image-loupe") as HTMLImageElement;
+const imageStatus = $("#image-status") as HTMLElement;
+const imageTransformBanner = $("#image-transform-banner") as HTMLElement;
+const imageGamutSelect = $("#image-gamut") as HTMLSelectElement;
+const imageTransferSelect = $("#image-transfer") as HTMLSelectElement;
+const imageScale203 = $("#image-scale-203") as HTMLInputElement;
+const imageGamutField = $("#image-gamut-field") as HTMLElement;
+const imageTransferField = $("#image-transfer-field") as HTMLElement;
+const imageStats = $("#image-stats") as HTMLElement;
+const imageLoadButton = $("#image-load") as HTMLButtonElement;
+const imageOptionsButton = $("#image-options") as HTMLButtonElement;
+const imageOptionsDialog = $("#image-options-dialog") as HTMLDialogElement;
+const imageOptionsClose = $("#image-options-close") as HTMLButtonElement;
+const imageInterpretationWarning = $("#image-interpretation-warning") as HTMLElement;
+const imageZoomButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-image-zoom]"));
 
 function canvasContext(target: HTMLCanvasElement): CanvasRenderingContext2D {
   try {
@@ -138,6 +160,10 @@ function canvasContext(target: HTMLCanvasElement): CanvasRenderingContext2D {
 
 const checkerboardContext = canvasContext(checkerboard);
 const indicatorContext = canvasContext(indicators);
+// Keep this transparent overlay in the same wide-gamut canvas space as the
+// gamut indicators. Safari can otherwise flatten an HDR image stack when an
+// sRGB canvas is composited over its valid PQ image.
+const imageOverlayContext = canvasContext(imageOverlay);
 let displayP3Canvas = false;
 try {
   displayP3Canvas = indicatorContext.getContextAttributes().colorSpace === "display-p3";
@@ -164,6 +190,18 @@ let currentRender:
 let currentPatches: Patch[] = [];
 let activePatch: number | null = null;
 let activeTarget: SnapTarget | null = null;
+let imageAverage: Code | null = null;
+type ImageAnalysis = {
+  x: number;
+  y: number;
+  sampleCount: number;
+  rejectedCount: number;
+  mean: Code;
+  meanAcescg: [number, number, number];
+  ellipse: ReturnType<typeof covarianceEllipse>;
+  loupe?: { x: number; y: number; width: number; height: number };
+};
+let imageAnalysis: ImageAnalysis | null = null;
 let activeAxis: "j" | "xy" | null = null;
 let code: Code = { j: INITIAL_J, x: 0.38, y: 0.65 };
 let realCode: Code = { ...code };
@@ -190,13 +228,78 @@ let previewUrl: string | undefined;
 let sliceUrl: string | undefined;
 let pageClosed = false;
 let backgroundSnap: number | null = null;
+let backgroundJ = 0.15;
+let backgroundTracking = false;
+let backgroundPointerId: number | null = null;
+let backgroundLastY = 0;
+let backgroundLastTime = 0;
+let backgroundVelocityX = 0;
+let backgroundVelocityY = 0;
+let backgroundMoved = false;
+let backgroundSuppressClick = false;
 let latestValueResponseId = 0;
+let latestPreviewResponseId = 0;
 let previewDecodeActive = false;
 let queuedPreview: PreviewResponse | undefined;
 
 const sliceWorker = new Worker(new URL("./render_worker.ts", import.meta.url), { type: "module" });
 const evaluatorWorker = new Worker(new URL("./render_worker.ts", import.meta.url), { type: "module" });
 const checkerWorker = evaluatorWorker;
+type ImageWorkerRequest = {
+  kind: "inspect" | "prepare" | "sample" | "preview";
+  id: number;
+  generation: number;
+  token?: number;
+  appearanceToken?: number;
+  format: string;
+  bytes?: ArrayBuffer;
+  gamut?: string | null;
+  transfer?: string | null;
+  view?: ViewId;
+  scale203?: boolean;
+  x?: number;
+  y?: number;
+  radius?: number;
+};
+type ImageWorkerMessage =
+  | { kind: "inspect"; id: number; generation: number; summary: any }
+  | { kind: "ready"; id: number; generation: number; width: number; height: number; previewWidth: number; previewHeight: number; summary: any; png: ArrayBuffer; view: ViewId; scale203: boolean; renderer: "webgpu" | "wasm" }
+  | { kind: "preview"; id: number; generation: number; appearanceToken: number; width: number; height: number; previewWidth: number; previewHeight: number; png: ArrayBuffer; view: ViewId; scale203: boolean; renderer: "webgpu" | "wasm" }
+  | { kind: "sample"; id: number; generation: number; token: number; x: number; y: number; minX: number; minY: number; width: number; height: number; loupe: ArrayBuffer; points: Array<{ j: number; x: number; y: number }>; mean: Code; meanAcescg: [number, number, number]; meanCode: Float64Array; rejected: number; total: number; view: ViewId; scale203: boolean }
+  | { kind: "error"; id: number; generation?: number; message: string };
+const imageWorker = new Worker(new URL("./image_locator_worker.ts", import.meta.url), { type: "module" });
+let imageRequestId = 0;
+let imageGeneration = 0;
+let imageFile: File | undefined;
+let imageFormat = "";
+let imageSummary: any;
+let imagePrepared = false;
+let imageScaleBy203 = true;
+let imageScaleUserChanged = false;
+let imageWidth = 0;
+let imageHeight = 0;
+let imagePreviewUrl: string | undefined;
+let imageLoupeUrl: string | undefined;
+let imagePointerX = 0;
+let imagePointerY = 0;
+let imagePointerSet = false;
+let imageTrackingActive = false;
+let imageTouchPointerId: number | null = null;
+let imageTouchLastX = 0;
+let imageTouchLastY = 0;
+let imageTouchLastTime = 0;
+let imageTouchVelocityX = 0;
+let imageTouchVelocityY = 0;
+let imageSampleToken = 0;
+let latestImageSampleToken = 0;
+let imageZoom = 2;
+let imagePointerLockActive = false;
+let imagePointerLockFallback = false;
+let imageOptionsFocusPending = false;
+let imageAppearanceToken = 0;
+let pendingImageAppearance:
+  | { token: number; view: ViewId; scale203: boolean; previewReady: boolean; sampleToken?: number; loupeReady: boolean }
+  | undefined;
 
 function finite(value: number, fallback = 0) {
   return Number.isFinite(value) ? value : fallback;
@@ -238,10 +341,12 @@ function decodeHex(value: string): [number, number, number] | undefined {
   ];
 }
 function currentBackgroundJ() {
-  return backgroundFromSlider(Number(backgroundRange.value));
+  return backgroundJ;
 }
 function updateBackground() {
-  backgroundValue.textContent = currentBackgroundJ().toFixed(3);
+  backgroundStick.hidden = false;
+  backgroundStick.style.bottom = `${clamp01(backgroundJ) * 100}%`;
+  backgroundStick.title = `Background J′ ${backgroundJ.toFixed(3)}`;
 }
 function updateJWheelVisual() {
   const height = jWheel.getBoundingClientRect().height || 1;
@@ -252,7 +357,9 @@ function updateJWheelVisual() {
   // pointer travel and is deliberately independent of accelerated/snapped J'.
   jWheelRoller.style.backgroundPositionY = `${jWheelTextureOffset}px`;
   jWheel.dataset.realValue = realCode.j.toFixed(6);
-  jWheel.dataset.visualOffset = jWheelTextureOffset.toFixed(3);
+  // Keep enough precision for resize reconstruction and diagnostics; the
+  // texture itself remains sub-pixel precise in CSS.
+  jWheel.dataset.visualOffset = jWheelTextureOffset.toFixed(9);
 }
 function updatePlotLabel() {
   const interaction = sliceTrackingActive
@@ -353,8 +460,34 @@ function drawIndicators() {
     drawCircle(indicatorContext, px, py, PATCH_ENTRY_RADIUS * scale,
       active ? "rgb(190 220 255 / 78%)" : "rgb(190 220 255 / 26%)", active ? 2 : 1.5);
   });
+  if (imageAnalysis?.ellipse) {
+    indicatorContext.strokeStyle = "rgb(255 203 93 / 78%)";
+    indicatorContext.lineWidth = 2;
+    indicatorContext.beginPath();
+    for (let step = 0; step <= 96; step += 1) {
+      const ellipsePointValue = ellipsePoint(imageAnalysis.ellipse, step / 96 * Math.PI * 2);
+      const [ex, ey] = point(ellipsePointValue.x, ellipsePointValue.y);
+      if (step === 0) indicatorContext.moveTo(ex, ey);
+      else indicatorContext.lineTo(ex, ey);
+    }
+    indicatorContext.closePath();
+    indicatorContext.stroke();
+  }
+  if (imageAverage) {
+    const [ax, ay] = point(imageAverage.x, imageAverage.y);
+    drawCircle(indicatorContext, ax, ay, 5, "rgb(255 203 93 / 92%)", 2);
+    indicatorContext.fillStyle = "rgb(255 203 93 / 92%)";
+    indicatorContext.beginPath();
+    indicatorContext.arc(ax, ay, 2, 0, Math.PI * 2);
+    indicatorContext.fill();
+  }
   if (activeTarget?.kind === "neutral")
     drawCircle(indicatorContext, nx, ny, PATCH_ENTRY_RADIUS * scale, "rgb(245 193 93 / 78%)", 2);
+  if (activeTarget?.kind === "average" && imageAverage) {
+    const [ax, ay] = point(imageAverage.x, imageAverage.y);
+    drawCircle(indicatorContext, ax, ay, PATCH_ENTRY_RADIUS * scale, "rgb(255 203 93 / 96%)", 2);
+  }
+  plotFrame.dataset.indicatorPatchCount = String(currentPatches.length);
   indicatorContext.restore();
 }
 function invalidatePendingSet() {
@@ -368,6 +501,8 @@ function updatePatchLocators() {
   if (patch) {
     jStick.style.bottom = `${patch.j * 100}%`;
   }
+  jImageStick.hidden = imageAverage === null;
+  if (imageAverage) jImageStick.style.bottom = `${imageAverage.j * 100}%`;
   jCurrentIndicator.style.bottom = `${code.j * 100}%`;
   checkerName.classList.toggle("is-hidden", !patch);
   checkerName.setAttribute("aria-hidden", String(!patch));
@@ -376,11 +511,14 @@ function updatePatchLocators() {
 function updatePatchCandidate(applySnap = true) {
   const real = currentRealCode();
   const patchPoints = currentPatches.map((patch) => ({ x: patch.x, y: patch.y }));
-  const candidate = nearestSnapTarget(real.x, real.y, patchPoints);
+  const candidate = nearestSnapTarget(real.x, real.y, patchPoints, { x: 0.5, y: 0.5 }, imageAverage ? { x: imageAverage.x, y: imageAverage.y } : undefined);
   if (candidate?.kind === "neutral") {
     activeTarget = candidate;
     activePatch = null;
-  } else if (candidate) {
+  } else if (candidate?.kind === "average") {
+    activePatch = null;
+    activeTarget = { kind: "average", x: candidate.x, y: candidate.y };
+  } else if (candidate?.kind === "patch") {
     const patch = currentPatches[candidate.index];
     activePatch = candidate.index;
     activeTarget = {
@@ -401,21 +539,24 @@ function updatePatchCandidate(applySnap = true) {
   const jTarget = nearestJSnapTarget(
     real.j,
     activeTarget?.kind === "patch" ? activeTarget.j : undefined,
+    J_REFERENCE_WHITE,
+    J_SNAP_DISTANCE,
+    imageAverage?.j,
   );
   plotFrame.dataset.jSnapTarget = jTarget?.kind ?? "none";
   plotFrame.dataset.colorcheckerRingCount = String(currentPatches.length);
   updatePatchLocators();
-  const projected =
-    applySnap
-      ? projectSnapCode(
-          real,
-          activeTarget,
-          activeTarget?.kind === "patch" ? activeTarget.j : undefined,
-          activeAxis,
-          code,
-        )
-      : real;
-  setDisplayedCode(projected);
+  if (applySnap) {
+    const projected = projectSnapCode(
+      real,
+      activeTarget,
+      activeTarget?.kind === "patch" ? activeTarget.j : undefined,
+      activeAxis,
+      code,
+      imageAverage?.j,
+    );
+    setDisplayedCode(projected);
+  }
 }
 function displayValues(values: Float64Array) {
   const valid = values[0] > 0.5;
@@ -431,13 +572,8 @@ function displayValues(values: Float64Array) {
   preview.dataset.previewReady = "pending";
   preview.dataset.valid = String(valid);
   preview.setAttribute("aria-label", `${valid ? "Picked color" : "Out-of-gamut color"}; ${VIEW_NAMES[selectedView]}. Choose view transform`);
-  backgroundValue.textContent = currentBackgroundJ().toFixed(3);
-  const backgroundDescription = `Surround J' ${currentBackgroundJ().toFixed(3)} in the fixed HDR P3 authoring scale`;
-  backgroundValue.title = backgroundDescription;
-  backgroundRange.setAttribute("aria-valuetext", backgroundDescription);
   backgroundSnap = finite(values[19], 0);
-  backgroundStick.hidden = false;
-  backgroundStick.style.left = `${clamp01(backgroundSnap) * 100}%`;
+  updateBackground();
 }
 function evaluationIsCurrent(response: EvaluateResponse | PreviewResponse) {
   return !pageClosed && response.id === evaluationId && response.profile === selectedView &&
@@ -449,7 +585,7 @@ function responseBelongsToCurrentView(response: EvaluateResponse | PreviewRespon
 }
 function responseMayAdvanceDuringGesture(response: EvaluateResponse | PreviewResponse) {
   return responseBelongsToCurrentView(response) &&
-    (activeAxis !== null || evaluationIsCurrent(response));
+    (activeAxis !== null || backgroundTracking || evaluationIsCurrent(response));
 }
 async function displayPreview(response: PreviewResponse) {
   if (!responseMayAdvanceDuringGesture(response)) return;
@@ -461,7 +597,7 @@ async function displayPreview(response: PreviewResponse) {
   nextImage.src = url;
   try {
     await nextImage.decode();
-    if (!responseMayAdvanceDuringGesture(response)) {
+    if (!responseMayAdvanceDuringGesture(response) || response.id !== latestPreviewResponseId) {
       URL.revokeObjectURL(url);
       return;
     }
@@ -492,6 +628,8 @@ async function displayPreview(response: PreviewResponse) {
 }
 function queuePreview(response: PreviewResponse) {
   if (!responseMayAdvanceDuringGesture(response)) return;
+  if (response.id < latestPreviewResponseId) return;
+  latestPreviewResponseId = response.id;
   if (previewDecodeActive) {
     if (!queuedPreview || response.id > queuedPreview.id) queuedPreview = response;
     return;
@@ -611,6 +749,10 @@ function parsePatches(values: Float64Array) {
   activePatch = null;
   activeTarget = null;
   updatePatchCandidate(false);
+  // The initial canvas was painted before the asynchronous ColorChecker
+  // response arrived.  Repaint now so dots and their dim rings are visible
+  // without requiring a picker gesture.
+  drawIndicators();
 }
 function requestPatches() {
   currentPatches = [];
@@ -630,12 +772,17 @@ function requestPatches() {
 function chooseView(view: ViewId) {
   cancelSliceTracking();
   finishJWheelInteraction(false);
+  if (imageTrackingActive) finishImageTracking();
   selectedView = view;
   preview.title = `${VIEW_NAMES[view]} — click to change view`;
   viewButtons.forEach(button => button.setAttribute("aria-checked", String(Number(button.dataset.view) === view)));
   closeViewMenu(true);
   // No coordinate conversion, marker reload, snap projection, or background edit.
   schedule();
+  if (imagePrepared) {
+    requestImagePreview();
+    requestImageSample();
+  }
 }
 function closeViewMenu(restoreFocus = false) {
   viewMenu.hidden = true;
@@ -672,6 +819,594 @@ function setFromHex() {
     blue: decoded[2],
   });
 }
+
+function imageSetStatus(message: string, error = false) {
+  imageStatus.textContent = message;
+  imageStatus.classList.toggle("callout-error", error);
+}
+
+function clearImageLoupe() {
+  imageLoupe.removeAttribute("src");
+  imageLoupe.alt = "Pixel loupe";
+  imageLoupe.style.display = "none";
+  if (imageLoupeUrl) URL.revokeObjectURL(imageLoupeUrl);
+  imageLoupeUrl = undefined;
+}
+
+function setImageTransformBusy(busy: boolean) {
+  imagePanel.classList.toggle("image-transforming", busy);
+  imageTransformBanner.hidden = !busy;
+  imageViewport.setAttribute("aria-busy", String(busy));
+  imagePanel.dataset.transforming = String(busy);
+  if (!busy) pendingImageAppearance = undefined;
+}
+
+function finishImageAppearanceIfReady() {
+  const pending = pendingImageAppearance;
+  if (pending?.view === selectedView && pending.scale203 === imageScaleBy203 &&
+    pending.previewReady && pending.loupeReady) setImageTransformBusy(false);
+}
+
+function detectImageFormat(file: File): string | undefined {
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".dng") || file.type === "image/x-adobe-dng" || file.type === "image/dng") return "dng";
+  if (lower.endsWith(".png") || file.type === "image/png") return "png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || file.type === "image/jpeg") return "jpeg";
+  if (lower.endsWith(".exr") || file.type === "image/x-exr") return "exr";
+  if (lower.endsWith(".heic") || file.type === "image/heic") return "heic";
+  if (lower.endsWith(".heif") || file.type === "image/heif") return "heif";
+  return undefined;
+}
+
+function defaultImageScale203(format: string, summary?: any): boolean {
+  const normalizedFormat = String(summary?.format ?? format).toLowerCase();
+  if (normalizedFormat === "dng" || normalizedFormat === "exr") return false;
+  if (summary?.gainmap_confirmed) return false;
+  const transfer = String(summary?.transfer ?? "").toLowerCase();
+  // PQ and HLG sources already carry an HDR display-referred scale.  Do not
+  // apply the SDR-to-HDR 2.03 lift unless the user explicitly opts in.
+  if (transfer.includes("pq") || transfer.includes("hlg")) return false;
+  return true;
+}
+
+function syncImageScaleDefault() {
+  if (imageScaleUserChanged) return;
+  const selectedTransfer = imageGamutSelect.value === "embedded"
+    ? imageSummary?.transfer
+    : imageTransferSelect.value;
+  imageScaleBy203 = defaultImageScale203(imageFormat, { ...imageSummary, transfer: selectedTransfer });
+  imageScale203.checked = imageScaleBy203;
+}
+
+function imageSetControlVisibility(summary: any) {
+  const isDng = String(summary?.format ?? imageFormat).toLowerCase() === "dng";
+  imageGamutField.hidden = isDng;
+  imageTransferField.hidden = isDng || imageGamutSelect.value === "embedded";
+  imageTransferSelect.disabled = isDng || imageGamutSelect.value === "embedded";
+  const embedded = Boolean(summary?.embedded_available ?? summary?.automatic_icc);
+  const option = imageGamutSelect.querySelector<HTMLOptionElement>('option[value="embedded"]');
+  if (option) {
+    option.disabled = !embedded;
+    option.textContent = summary?.metadata_source
+      ? `Use embedded ${String(summary.metadata_source).replace(/^(PNG|JPEG|HEIF|EXR)\s+/i, "")}`
+      : "Use embedded interpretation";
+  }
+  if (!embedded && !isDng) {
+    imageGamutSelect.value = "Rec.709 / sRGB";
+    imageTransferSelect.value = "sRGB";
+    imageInterpretationWarning.hidden = false;
+    imageInterpretationWarning.textContent = "No embedded color profile was found. The image is being interpreted as sRGB (Rec.709) with sRGB transfer; you can override this below.";
+  }
+}
+
+function imageInterpretationReady() {
+  if (String(imageSummary?.format ?? imageFormat).toLowerCase() === "dng") return true;
+  if (imageGamutSelect.value === "embedded") return Boolean(imageSummary?.embedded_available ?? imageSummary?.automatic_icc);
+  return Boolean(imageGamutSelect.value && imageTransferSelect.value);
+}
+
+function updateImageOptionsWarning() {
+  const format = String(imageSummary?.format ?? imageFormat).toLowerCase();
+  const assumed = format !== "dng" && !Boolean(imageSummary?.embedded_available ?? imageSummary?.automatic_icc) && imageGamutSelect.value === "Rec.709 / sRGB" && imageTransferSelect.value === "sRGB";
+  imageInterpretationWarning.hidden = !assumed;
+  if (assumed) imageInterpretationWarning.textContent = "No embedded color profile was found. The image is being interpreted as sRGB (Rec.709) with sRGB transfer; you can override this below.";
+}
+
+function imageRequestPrepare() {
+  if (!imageFile || !imageFormat || !imageInterpretationReady()) {
+    if (imageFile) imageSetStatus("Select both Primaries and Transfer to interpret this image.");
+    return;
+  }
+  imagePrepared = false;
+  setImageTransformBusy(true);
+  if (imageTrackingActive) finishImageTracking();
+  // A new interpretation changes every sampled AP0 value.  Drop the old
+  // statistics and average snap target immediately; the pointer location is
+  // retained and sampled again when the replacement raster is ready.
+  imageAnalysis = null;
+  imageAverage = null;
+  clearImageLoupe();
+  imagePanel.dataset.ready = "false";
+  imageViewport.dataset.ready = "false";
+  updatePatchCandidate(false);
+  drawIndicators();
+  imageGeneration += 1;
+  imageSetStatus("Preparing the native image raster…");
+  const id = imageRequestId;
+  const embedded = imageGamutSelect.value === "embedded";
+  imageWorker.postMessage({
+    kind: "prepare", id, generation: imageGeneration, format: imageFormat,
+    gamut: embedded || String(imageSummary?.format ?? "").toLowerCase() === "dng" ? null : imageGamutSelect.value,
+    transfer: embedded || String(imageSummary?.format ?? "").toLowerCase() === "dng" ? null : imageTransferSelect.value,
+    view: selectedView,
+    scale203: imageScaleBy203,
+  } satisfies ImageWorkerRequest);
+}
+
+function imageGeometry() {
+  const viewport = imageViewport.getBoundingClientRect();
+  const sourceW = Math.max(1, imageWidth), sourceH = Math.max(1, imageHeight);
+  const baseScale = Math.max(viewport.width / sourceW, viewport.height / sourceH);
+  const scale = baseScale * imageZoom;
+  const width = sourceW * scale, height = sourceH * scale;
+  const xFraction = imagePointerX / Math.max(1, imageWidth - 1);
+  const yFraction = imagePointerY / Math.max(1, imageHeight - 1);
+  const desiredLeft = viewport.width / 2 - xFraction * width;
+  const desiredTop = viewport.height / 2 - yFraction * height;
+  const left = Math.max(viewport.width - width, Math.min(0, desiredLeft));
+  const top = Math.max(viewport.height - height, Math.min(0, desiredTop));
+  return {
+    viewport,
+    scale,
+    width,
+    height,
+    left,
+    top,
+    crosshairX: left + xFraction * width,
+    crosshairY: top + yFraction * height,
+  };
+}
+
+function updateImageGeometry() {
+  if (!imageWidth || !imageHeight) return imageGeometry();
+  const geometry = imageGeometry();
+  imagePreview.style.left = `${geometry.left}px`;
+  imagePreview.style.top = `${geometry.top}px`;
+  imagePreview.style.width = `${geometry.width}px`;
+  imagePreview.style.height = `${geometry.height}px`;
+  imageViewport.dataset.zoom = String(imageZoom);
+  imageViewport.dataset.panX = geometry.left.toFixed(3);
+  imageViewport.dataset.panY = geometry.top.toFixed(3);
+  imageViewport.dataset.crosshairX = geometry.crosshairX.toFixed(3);
+  imageViewport.dataset.crosshairY = geometry.crosshairY.toFixed(3);
+  return geometry;
+}
+
+function imageViewportRect() {
+  const geometry = updateImageGeometry();
+  return {
+    left: geometry.viewport.left + geometry.left,
+    top: geometry.viewport.top + geometry.top,
+    width: geometry.width,
+    height: geometry.height,
+  };
+}
+
+function imageClientToNative(clientX: number, clientY: number) {
+  const rect = imageViewportRect();
+  return {
+    x: clamp01((clientX - rect.left) / Math.max(1, rect.width)) * Math.max(0, imageWidth - 1),
+    y: clamp01((clientY - rect.top) / Math.max(1, rect.height)) * Math.max(0, imageHeight - 1),
+  };
+}
+
+function imageNativeToCanvas(x: number, y: number): [number, number] {
+  const geometry = updateImageGeometry();
+  const px = geometry.left + (x / Math.max(1, imageWidth - 1)) * geometry.width;
+  const py = geometry.top + (y / Math.max(1, imageHeight - 1)) * geometry.height;
+  return [
+    px / Math.max(1, geometry.viewport.width) * imageOverlay.width,
+    py / Math.max(1, geometry.viewport.height) * imageOverlay.height,
+  ];
+}
+
+function drawImageOverlay() {
+  imageOverlayContext.clearRect(0, 0, imageOverlay.width, imageOverlay.height);
+  imageLoupe.style.display = imageAnalysis?.loupe ? "block" : "none";
+  if (!imagePointerSet) return;
+  const geometry = updateImageGeometry();
+  const [px, py] = [
+    geometry.crosshairX / Math.max(1, geometry.viewport.width) * imageOverlay.width,
+    geometry.crosshairY / Math.max(1, geometry.viewport.height) * imageOverlay.height,
+  ];
+  imageOverlayContext.save();
+  imageOverlayContext.strokeStyle = "rgb(255 255 255 / 92%)";
+  imageOverlayContext.lineWidth = 2;
+  imageOverlayContext.beginPath();
+  imageOverlayContext.moveTo(px - 18, py); imageOverlayContext.lineTo(px - 5, py);
+  imageOverlayContext.moveTo(px + 5, py); imageOverlayContext.lineTo(px + 18, py);
+  imageOverlayContext.moveTo(px, py - 18); imageOverlayContext.lineTo(px, py - 5);
+  imageOverlayContext.moveTo(px, py + 5); imageOverlayContext.lineTo(px, py + 18);
+  imageOverlayContext.stroke();
+  imageOverlayContext.strokeStyle = "rgb(0 0 0 / 85%)";
+  imageOverlayContext.lineWidth = 1;
+  imageOverlayContext.strokeRect(px - 4, py - 4, 8, 8);
+  imageOverlayContext.restore();
+}
+
+function requestImageSample() {
+  if (!imagePrepared || !imageFile) return;
+  const token = ++imageSampleToken;
+  latestImageSampleToken = token;
+  if (pendingImageAppearance?.view === selectedView && pendingImageAppearance.scale203 === imageScaleBy203) {
+    pendingImageAppearance.sampleToken = token;
+    pendingImageAppearance.loupeReady = false;
+  }
+  imageWorker.postMessage({ kind: "sample", id: imageRequestId, generation: imageGeneration, token, format: imageFormat, x: imagePointerX, y: imagePointerY, radius: 3, view: selectedView, scale203: imageScaleBy203 } satisfies ImageWorkerRequest);
+}
+
+function requestImagePreview() {
+  if (!imagePrepared || !imageFile) return;
+  const appearanceToken = ++imageAppearanceToken;
+  pendingImageAppearance = { token: appearanceToken, view: selectedView, scale203: imageScaleBy203, previewReady: false, loupeReady: false };
+  setImageTransformBusy(true);
+  imageWorker.postMessage({ kind: "preview", id: imageRequestId, generation: imageGeneration, appearanceToken, format: imageFormat, view: selectedView, scale203: imageScaleBy203 } satisfies ImageWorkerRequest);
+}
+
+function setImagePointer(x: number, y: number, sample = true) {
+  imagePointerX = Math.max(0, Math.min(Math.max(0, imageWidth - 1), x));
+  imagePointerY = Math.max(0, Math.min(Math.max(0, imageHeight - 1), y));
+  imagePointerSet = true;
+  updateImageGeometry();
+  imageViewport.dataset.pointerX = imagePointerX.toFixed(4);
+  imageViewport.dataset.pointerY = imagePointerY.toFixed(4);
+  drawImageOverlay();
+  if (sample) requestImageSample();
+}
+
+function applyImageRelativeDelta(deltaX: number, deltaY: number, sample = true) {
+  const geometry = updateImageGeometry();
+  // The native selection is the sole gesture state. Centering it and clamping
+  // the rendered image gives the unique image/crosshair solution; at a bound,
+  // further deltas move the crosshair toward the image edge, and reversal
+  // naturally re-centers it before the image begins moving again.
+  setImagePointer(imagePointerX + deltaX / Math.max(1e-6, geometry.scale), imagePointerY + deltaY / Math.max(1e-6, geometry.scale), sample);
+}
+
+function setImageZoom(value: number) {
+  const nextZoom = [1, 2, 5].includes(value) ? value : 2;
+  const selectedX = imagePointerX, selectedY = imagePointerY;
+  imageZoom = nextZoom;
+  imagePointerX = selectedX;
+  imagePointerY = selectedY;
+  imageZoomButtons.forEach(button => button.setAttribute("aria-pressed", String(Number(button.dataset.imageZoom) === imageZoom)));
+  updateImageGeometry();
+  drawImageOverlay();
+}
+
+function finishImageTracking() {
+  if (document.pointerLockElement === imageViewport) {
+    try { document.exitPointerLock(); } catch { /* best effort */ }
+  }
+  imagePointerLockActive = false;
+  imageTrackingActive = false;
+  imageTouchPointerId = null;
+  imageViewport.classList.remove("image-tracking");
+  imageViewport.dataset.tracking = "idle";
+  drawImageOverlay();
+}
+
+function applyImageDesktopPointer(event: PointerEvent) {
+  const point = imageClientToNative(event.clientX, event.clientY);
+  setImagePointer(point.x, point.y);
+  event.preventDefault();
+}
+
+function applyImageLockedMotion(event: MouseEvent) {
+  const now = performance.now();
+  const elapsed = Math.max(1, now - imageTouchLastTime);
+  const dx = event.movementX || 0, dy = event.movementY || 0;
+  const velocity = rollingBallVelocity({ x: imageTouchVelocityX, y: imageTouchVelocityY }, dx, dy, imageViewport.clientWidth, imageViewport.clientHeight, elapsed);
+  imageTouchVelocityX = velocity.x; imageTouchVelocityY = velocity.y; imageTouchLastTime = now;
+  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
+  applyImageRelativeDelta(dx * acceleration, dy * acceleration);
+}
+
+imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
+  const response = event.data;
+  if (response.generation !== undefined && response.generation !== imageGeneration) return;
+  if (response.id !== imageRequestId) return;
+  if (response.kind === "error") {
+    imagePrepared = false;
+    setImageTransformBusy(false);
+    imageSetStatus(response.message, true);
+    return;
+  }
+  if (response.kind === "inspect") {
+    imageSummary = response.summary;
+    // Inspection establishes the source interpretation controls.  The image
+    // viewport remains hidden until the native raster is prepared, but the
+    // controls must be available immediately for files without metadata.
+    imagePanel.dataset.ready = "inspected";
+    imageSetControlVisibility(imageSummary);
+    syncImageScaleDefault();
+    updateImageOptionsWarning();
+    imageTransferField.hidden = String(imageSummary?.format ?? imageFormat).toLowerCase() === "dng" || imageGamutSelect.value === "embedded";
+    imageSetStatus(imageInterpretationReady() ? "Preparing the native image raster…" : "Choose a source interpretation to continue.");
+    if (imageInterpretationReady()) imageRequestPrepare();
+    return;
+  }
+  if (response.kind === "ready") {
+    imageWidth = response.width; imageHeight = response.height;
+    // Decode the replacement off-DOM.  Keep the previous row hidden and only
+    // expose this generation after the native pointer, geometry, and overlay
+    // have all been initialized, preventing an image-without-crosshair gap.
+    const generation = imageGeneration;
+    const requestId = imageRequestId;
+    const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
+    const decoded = new Image();
+    decoded.src = url;
+    try {
+      await decoded.decode();
+    } catch {
+      URL.revokeObjectURL(url);
+      imagePrepared = false;
+      setImageTransformBusy(false);
+      imageSetStatus("Prepared image could not be decoded.", true);
+      return;
+    }
+    if (generation !== imageGeneration || requestId !== imageRequestId) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    const presentationMismatch = response.view !== selectedView || response.scale203 !== imageScaleBy203;
+    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+    imagePreviewUrl = url;
+    imagePreview.src = imagePreviewUrl;
+    imagePreview.dataset.renderer = response.renderer;
+    imagePreview.alt = `Loaded ${imageFormat.toUpperCase()} image (${imageWidth} × ${imageHeight})`;
+    // Make the replacement layout measurable before deriving geometry.  This
+    // handler runs to completion before the browser paints, so the ready row,
+    // image, and initialized crosshair become visible as one update.
+    imagePrepared = true;
+    imagePanel.dataset.ready = "true";
+    imageViewport.dataset.ready = "true";
+    imagePanel.hidden = false;
+    imagePointerSet = false;
+    setImagePointer(imageWidth / 2, imageHeight / 2, false);
+    updateImageGeometry();
+    drawImageOverlay();
+    imageSetStatus(`${imageWidth} × ${imageHeight} native pixels ready. Click to locate a color.`);
+    setImageTransformBusy(false);
+    imageStats.textContent = "Move the crosshair to inspect a 3 px neighborhood.";
+    if (presentationMismatch) requestImagePreview();
+    requestImageSample();
+    return;
+  }
+  if (response.kind === "preview") {
+    if (!imagePrepared || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.scale203 !== imageScaleBy203) return;
+    const generation = imageGeneration;
+    const requestId = imageRequestId;
+    const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
+    const decoded = new Image();
+    decoded.src = url;
+    try {
+      await decoded.decode();
+    } catch {
+      URL.revokeObjectURL(url);
+      setImageTransformBusy(false);
+      imageSetStatus("Display transform could not be decoded; previous image retained.", true);
+      return;
+    }
+    if (generation !== imageGeneration || requestId !== imageRequestId || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.scale203 !== imageScaleBy203) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+    imagePreviewUrl = url;
+    imagePreview.src = imagePreviewUrl;
+    imagePreview.dataset.renderer = response.renderer;
+    imagePreview.alt = `Loaded ${imageFormat.toUpperCase()} image (${imageWidth} × ${imageHeight})`;
+    if (pendingImageAppearance?.token === response.appearanceToken && pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203) {
+      pendingImageAppearance.previewReady = true;
+      finishImageAppearanceIfReady();
+    }
+    return;
+  }
+  if (response.kind === "sample") {
+    if (response.token !== latestImageSampleToken) return;
+    if (response.view !== selectedView || response.scale203 !== imageScaleBy203) return;
+    imageViewport.dataset.sampleX = String(response.x);
+    imageViewport.dataset.sampleY = String(response.y);
+    imageViewport.dataset.sampleCount = String(response.points.length);
+    imageViewport.dataset.sampleRejected = String(response.rejected);
+    const points = response.points.map(point => ({ x: point.x, y: point.y }));
+    const ellipse = covarianceEllipse(points);
+    const meanCode = response.meanCode;
+    void (async () => {
+      const url = URL.createObjectURL(new Blob([response.loupe], { type: "image/png" }));
+      const image = new Image();
+      image.src = url;
+      try {
+        await image.decode();
+      } catch {
+        URL.revokeObjectURL(url);
+        if (pendingImageAppearance?.sampleToken === response.token &&
+          pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203) {
+          pendingImageAppearance.loupeReady = true;
+          finishImageAppearanceIfReady();
+        }
+        return;
+      }
+      // Decode off-DOM, then atomically publish the direct image.  Keep the
+      // active blob URL alive until the next replacement; revoking it
+      // immediately after decode can make Safari discard the HDR resource
+      // while it is still being presented.
+      if (response.id !== imageRequestId || response.generation !== imageGeneration || response.token !== latestImageSampleToken || response.view !== selectedView || response.scale203 !== imageScaleBy203 || !imagePrepared) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const previousUrl = imageLoupeUrl;
+      imageLoupe.src = url;
+      imageLoupe.alt = `Pixel loupe centered at ${response.x}, ${response.y}`;
+      imageLoupeUrl = url;
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      imageAnalysis = {
+        x: response.x, y: response.y, sampleCount: response.points.length,
+        rejectedCount: response.rejected, mean: response.mean,
+        meanAcescg: response.meanAcescg, ellipse,
+        loupe: { x: response.minX, y: response.minY, width: response.width, height: response.height },
+      };
+      imageAverage = meanCode[0] > 0.5 ? { j: meanCode[1], x: meanCode[2], y: meanCode[3] } : null;
+      imageStats.textContent = `Center ${response.x}, ${response.y} · ${response.total} pixels sampled (${response.rejected} unavailable); mean J′ ${response.mean.j.toFixed(4)}, x′ ${response.mean.x.toFixed(4)}, y′ ${response.mean.y.toFixed(4)}`;
+      updatePatchCandidate(false);
+      drawIndicators();
+      drawImageOverlay();
+      if (pendingImageAppearance?.sampleToken === response.token &&
+        pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203) {
+        pendingImageAppearance.loupeReady = true;
+        finishImageAppearanceIfReady();
+      }
+    })();
+  }
+};
+
+imageWorker.onerror = () => {
+  setImageTransformBusy(false);
+  imageSetStatus("Image decoder worker failed.", true);
+};
+imageLoadButton.addEventListener("click", () => imageFileInput.click());
+function openImageOptions() {
+  updateImageOptionsWarning();
+  imageOptionsButton.setAttribute("aria-expanded", "true");
+  if (typeof imageOptionsDialog.showModal === "function") imageOptionsDialog.showModal();
+  else imageOptionsDialog.setAttribute("open", "");
+  imageOptionsFocusPending = true;
+  requestAnimationFrame(() => (imageGamutSelect.offsetParent ? imageGamutSelect : imageOptionsClose).focus());
+}
+function closeImageOptions() {
+  if (imageOptionsDialog.open) imageOptionsDialog.close();
+  else imageOptionsDialog.removeAttribute("open");
+  imageOptionsButton.setAttribute("aria-expanded", "false");
+  if (imageOptionsFocusPending) { imageOptionsFocusPending = false; imageOptionsButton.focus(); }
+}
+imageOptionsButton.addEventListener("click", openImageOptions);
+imageOptionsClose.addEventListener("click", event => { event.preventDefault(); closeImageOptions(); });
+imageOptionsDialog.addEventListener("click", event => { if (event.target === imageOptionsDialog) closeImageOptions(); });
+imageOptionsDialog.addEventListener("cancel", event => { event.preventDefault(); closeImageOptions(); });
+imageOptionsDialog.addEventListener("close", () => {
+  imageOptionsButton.setAttribute("aria-expanded", "false");
+  if (imageOptionsFocusPending) { imageOptionsFocusPending = false; imageOptionsButton.focus(); }
+});
+imageZoomButtons.forEach(button => button.addEventListener("click", () => setImageZoom(Number(button.dataset.imageZoom))));
+imageFileInput.addEventListener("change", async () => {
+  const file = imageFileInput.files?.[0];
+  if (!file) return;
+  const format = detectImageFormat(file);
+  if (!format) { imageSetStatus("Unsupported image format. Choose DNG, EXR, JPEG, PNG, HEIC, or HEIF.", true); return; }
+  imageGeneration += 1;
+  imageRequestId += 1;
+  imageFile = file; imageFormat = format; imageSummary = undefined; imagePrepared = false;
+  imageOptionsButton.disabled = false;
+  imagePointerSet = false; imageAnalysis = null; imageAverage = null;
+  imageZoom = 2;
+  imageZoomButtons.forEach(button => button.setAttribute("aria-pressed", String(button.dataset.imageZoom === "2")));
+  clearImageLoupe();
+  imagePanel.hidden = false; imageViewport.dataset.ready = "false";
+  imagePanel.dataset.ready = "false";
+  setImageTransformBusy(false);
+  imagePreview.removeAttribute("src");
+  imagePreview.alt = "Loaded source image";
+  imageStats.textContent = "";
+  updatePatchCandidate(false);
+  drawIndicators();
+  imageGamutSelect.value = "embedded"; imageTransferSelect.value = "sRGB";
+  imageScaleUserChanged = false;
+  imageScaleBy203 = defaultImageScale203(format);
+  imageScale203.checked = imageScaleBy203;
+  imageGamutField.hidden = true;
+  imageTransferField.hidden = true;
+  imageSetStatus(`Inspecting ${file.name}…`);
+  try {
+    const bytes = await file.arrayBuffer();
+    imageWorker.postMessage({ kind: "inspect", id: imageRequestId, generation: imageGeneration, format, bytes } satisfies ImageWorkerRequest, [bytes]);
+  } catch (error) { imageSetStatus(error instanceof Error ? error.message : String(error), true); }
+});
+imageGamutSelect.addEventListener("change", () => { imageSetControlVisibility(imageSummary); updateImageOptionsWarning(); syncImageScaleDefault(); if (imageInterpretationReady()) imageRequestPrepare(); });
+imageTransferSelect.addEventListener("change", () => { updateImageOptionsWarning(); syncImageScaleDefault(); if (imageInterpretationReady()) imageRequestPrepare(); });
+imageScale203.addEventListener("change", () => {
+  imageScaleUserChanged = true;
+  imageScaleBy203 = imageScale203.checked;
+  if (imagePrepared) {
+    requestImagePreview();
+    requestImageSample();
+  }
+});
+imageViewport.addEventListener("pointerdown", event => {
+  if (!imagePrepared || event.pointerType === "mouse" && event.button !== 0) return;
+  if (event.pointerType === "mouse") {
+    if (!imageTrackingActive) {
+      imageTrackingActive = true; imagePointerLockFallback = false;
+      imageViewport.classList.add("image-tracking"); imageViewport.dataset.tracking = "mouse-active";
+      applyImageDesktopPointer(event);
+      imageTouchLastTime = performance.now(); imageTouchVelocityX = 0; imageTouchVelocityY = 0;
+      try {
+        if (typeof imageViewport.requestPointerLock !== "function") {
+          imagePointerLockFallback = true;
+          imageViewport.dataset.pointerLock = "fallback";
+        }
+        const result = imageViewport.requestPointerLock?.();
+        if (result && typeof (result as Promise<void>).catch === "function") {
+          (result as Promise<void>).catch(() => { imagePointerLockFallback = true; imageViewport.dataset.pointerLock = "fallback"; });
+        }
+      } catch { imagePointerLockFallback = true; imageViewport.dataset.pointerLock = "fallback"; }
+    } else {
+      finishImageTracking();
+    }
+    event.stopPropagation(); event.preventDefault(); return;
+  }
+  if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+  imageTouchPointerId = event.pointerId; imageTrackingActive = true; imageViewport.classList.add("image-tracking"); imageViewport.dataset.tracking = "touch-active";
+  imageTouchLastX = event.clientX; imageTouchLastY = event.clientY; imageTouchLastTime = performance.now(); imageTouchVelocityX = 0; imageTouchVelocityY = 0;
+  try { imageViewport.setPointerCapture(event.pointerId); } catch { /* best effort */ }
+  event.preventDefault();
+});
+document.addEventListener("pointermove", event => {
+  if (!imageTrackingActive || event.pointerType !== "mouse") return;
+  if (!imagePointerLockActive || document.pointerLockElement !== imageViewport) applyImageDesktopPointer(event);
+});
+// Pointer Lock reports relative movement through `mousemove`, not
+// `pointermove`; keep this separate from the visible-pointer fallback above.
+document.addEventListener("mousemove", event => {
+  if (!imageTrackingActive || !imagePointerLockActive || document.pointerLockElement !== imageViewport) return;
+  applyImageLockedMotion(event);
+});
+document.addEventListener("pointerdown", event => {
+  if (imageTrackingActive && event.pointerType === "mouse" && event.button === 0 && !imageViewport.contains(event.target as Node)) {
+    finishImageTracking(); event.preventDefault(); event.stopImmediatePropagation();
+  }
+}, true);
+document.addEventListener("pointerlockchange", () => {
+  imagePointerLockActive = document.pointerLockElement === imageViewport;
+  imageViewport.classList.toggle("pointer-lock-active", imagePointerLockActive);
+  imageViewport.dataset.pointerLock = imagePointerLockActive ? "active" : (imagePointerLockFallback ? "fallback" : "none");
+  if (!imagePointerLockActive && imageTrackingActive && !imagePointerLockFallback) finishImageTracking();
+});
+document.addEventListener("pointerlockerror", () => {
+  if (imageTrackingActive) { imagePointerLockFallback = true; imageViewport.dataset.pointerLock = "fallback"; }
+});
+imageViewport.addEventListener("pointermove", event => {
+  if ((event.pointerType !== "touch" && event.pointerType !== "pen") || event.pointerId !== imageTouchPointerId) return;
+  const now = performance.now(); const elapsed = Math.max(1, now - imageTouchLastTime);
+  const dx = event.clientX - imageTouchLastX, dy = event.clientY - imageTouchLastY;
+  const velocity = rollingBallVelocity({ x: imageTouchVelocityX, y: imageTouchVelocityY }, dx, dy, imageViewport.clientWidth, imageViewport.clientHeight, elapsed);
+  imageTouchVelocityX = velocity.x; imageTouchVelocityY = velocity.y; imageTouchLastX = event.clientX; imageTouchLastY = event.clientY; imageTouchLastTime = now;
+  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
+  applyImageRelativeDelta(dx * acceleration, dy * acceleration);
+  event.preventDefault();
+});
+imageViewport.addEventListener("pointerup", event => { if (event.pointerId === imageTouchPointerId) finishImageTracking(); });
+imageViewport.addEventListener("pointercancel", event => { if (event.pointerId === imageTouchPointerId) finishImageTracking(); });
 
 [sliceWorker, evaluatorWorker].forEach((worker) => {
   worker.onmessage = (
@@ -1045,24 +1780,74 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     cancelSliceTracking();
     finishJWheelInteraction();
+    if (imageTrackingActive) finishImageTracking();
   }
 });
-backgroundRange.addEventListener("input", () => {
+let previewPointerId: number | null = null;
+let previewStartX = 0;
+let previewStartY = 0;
+let previewLastY = 0;
+let previewLastTime = 0;
+let previewVelocityX = 0;
+let previewVelocityY = 0;
+let previewDragging = false;
+function finishPreviewDrag() {
+  if (previewPointerId === null) return;
+  try { if (preview.hasPointerCapture?.(previewPointerId)) preview.releasePointerCapture(previewPointerId); } catch { /* best effort */ }
+  previewPointerId = null;
+  previewDragging = false;
+  previewVelocityX = previewVelocityY = 0;
+  backgroundTracking = false;
+  preview.dataset.tracking = "idle";
+}
+function applyPreviewDrag(event: PointerEvent) {
+  if (previewPointerId === null || event.pointerId !== previewPointerId) return;
+  const now = performance.now();
+  const elapsed = Math.max(1, now - previewLastTime);
+  const dx = event.clientX - previewStartX;
+  const dy = event.clientY - previewLastY;
+  previewStartX = event.clientX;
+  previewLastY = event.clientY;
+  const velocity = rollingBallVelocity({ x: previewVelocityX, y: previewVelocityY }, dx, dy, preview.clientWidth || 1, preview.clientHeight || 1, elapsed);
+  previewVelocityX = velocity.x; previewVelocityY = velocity.y; previewLastTime = now;
+  if (!previewDragging && Math.abs(event.clientY - previewStartY) < 6) return;
+  previewDragging = true;
+  preview.dataset.tracking = "active";
+  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
+  const next = rollingWheelDelta(backgroundJ, dy, preview.clientHeight || 1, ROLLING_BALL_SENSITIVITY, acceleration);
+  backgroundJ = next;
+  if (backgroundSnap !== null && Math.abs(backgroundJ - backgroundSnap) <= 0.02) backgroundJ = backgroundSnap;
   invalidatePendingSet();
-  if (
-    backgroundSnap !== null &&
-    Math.abs(Number(backgroundRange.value) - backgroundSnap) <= 0.02
-  ) {
-    backgroundRange.value = backgroundSnap.toString();
-  }
-  backgroundValue.textContent = currentBackgroundJ().toFixed(3);
+  updateBackground();
   schedule();
+  event.preventDefault();
+}
+preview.addEventListener("pointerdown", event => {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  if (previewPointerId !== null) return;
+  previewPointerId = event.pointerId;
+  backgroundTracking = true;
+  previewStartX = event.clientX; previewStartY = event.clientY; previewLastY = event.clientY;
+  previewLastTime = performance.now(); previewVelocityX = previewVelocityY = 0; previewDragging = false;
+  if (event.pointerType !== "mouse") { try { preview.setPointerCapture(event.pointerId); } catch { /* best effort */ } }
+  event.preventDefault();
 });
-backgroundRange.addEventListener("change", () => {
-  invalidatePendingSet();
-  schedule();
+preview.addEventListener("pointermove", applyPreviewDrag);
+preview.addEventListener("pointerup", event => {
+  if (event.pointerId !== previewPointerId) return;
+  const dragged = previewDragging;
+  finishPreviewDrag();
+  if (dragged) { backgroundSuppressClick = true; window.setTimeout(() => { backgroundSuppressClick = false; }, 300); }
+  else if (event.pointerType !== "mouse") openViewMenu();
 });
-preview.addEventListener("click", () => viewMenu.hidden ? openViewMenu() : closeViewMenu());
+preview.addEventListener("pointercancel", finishPreviewDrag);
+document.addEventListener("pointermove", event => {
+  if (previewPointerId !== null && event.pointerType === "mouse") applyPreviewDrag(event);
+});
+preview.addEventListener("click", event => {
+  if (backgroundSuppressClick) { event.preventDefault(); event.stopPropagation(); return; }
+  openViewMenu();
+});
 viewButtons.forEach(button => button.addEventListener("click", () => {
   const view = Number(button.dataset.view) as ViewId;
   if (VIEW_IDS.includes(view)) chooseView(view);
@@ -1084,11 +1869,24 @@ document.addEventListener("pointerdown", event => {
 window.addEventListener("resize", () => {
   closeViewMenu();
   updateJWheelVisual();
+  updateImageGeometry();
+  drawImageOverlay();
+  // Grid track sizes settle after the resize event.  A queued task catches
+  // browsers that deliver ResizeObserver after the next layout read.
+  window.setTimeout(() => updateJWheelVisual(), 0);
 });
+// Resize events can fire before the grid has applied its new track size.  The
+// observer runs after layout, ensuring the free wheel texture is rescaled to
+// the actual companion height rather than the stale pre-resize height.
+if (typeof ResizeObserver !== "undefined") {
+  new ResizeObserver(() => updateJWheelVisual()).observe(jWheel);
+}
 window.addEventListener("pagehide", () => {
   pageClosed = true;
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   if (sliceUrl) URL.revokeObjectURL(sliceUrl);
+  if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+  if (imageLoupeUrl) URL.revokeObjectURL(imageLoupeUrl);
 });
 window.addEventListener("pageshow", () => {
   if (pageClosed) { pageClosed = false; schedule(); }
@@ -1114,9 +1912,10 @@ paintCheckerboard();
 drawIndicators();
 plotFrame.dataset.sliceTracking = "idle";
 jWheel.dataset.tracking = "idle";
+imageViewport.dataset.tracking = "idle";
 jReferenceTick.style.bottom = `${J_REFERENCE_WHITE * 100}%`;
-jReferenceTick.title = `100 nits — J\u2032 ${J_REFERENCE_WHITE.toFixed(6)}`;
-backgroundRange.value = "0.15";
+jReferenceTick.title = `203 nits HDR white — J\u2032 ${J_REFERENCE_WHITE.toFixed(6)}`;
+backgroundJ = 0.15;
 updateBackground();
 requestPatches();
 requestEvaluate();

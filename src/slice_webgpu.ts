@@ -1,17 +1,24 @@
 // The compute shader follows the ACES fixed-function ordering in the Painter
 // modcam16_hk_view.glsl reference. Table values come from the same official
-// OCIO-derived payload used by the WASM fallback; PyOpenColorIO tests remain
-// the numerical authority.
+// OCIO-derived payload used by the WASM fallback (the checked-in table
+// generation follows source/generate_aces_tables.py); PyOpenColorIO tests
+// remain the numerical authority.
 
 type Gpu = any;
 
 const WORKGROUP = 8;
+const gpuBufferUsage = () => (globalThis as any).GPUBufferUsage ?? {
+  MAP_READ: 0x0001, COPY_SRC: 0x0004, COPY_DST: 0x0008,
+  UNIFORM: 0x0040, STORAGE: 0x0080,
+};
+const gpuMapMode = () => (globalThis as any).GPUMapMode ?? { READ: 0x0001 };
 
 const shader = /* wgsl */ `
-struct Settings { width: u32, height: u32, profile: u32, j: f32 }
+struct Settings { width: u32, height: u32, profile: u32, j: f32, mode: u32, scale203: u32 }
 @group(0) @binding(0) var<uniform> settings: Settings;
 @group(0) @binding(1) var<storage, read> data: array<f32>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> input_pixels: array<vec4<f32>>;
 
 const PI: f32 = 3.141592653589793;
 const J_PEAK: f32 = 217.2768649129496;
@@ -41,6 +48,11 @@ fn ap0ToAcescg(v: vec3<f32>) -> vec3<f32> {
 }
 fn xyzToP3(v: vec3<f32>) -> vec3<f32> {
   return vec3<f32>(2.493496911941425*v.x - .931383617919124*v.y - .402710784450717*v.z, -.829488969561575*v.x + 1.762664060318347*v.y + .023624685841944*v.z, .035845830243784*v.x - .076172389268042*v.y + .956884524007687*v.z);
+}
+fn ap0ToXyz(v: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(.938279841815694*v.x - .004451445665284*v.y + .016627526998033*v.z,
+    .337368891456768*v.x + .729521570671540*v.y - .066890458295250*v.z,
+    .001173949539939*v.x - .003710705591141*v.y + 1.091594511691737*v.z);
 }
 fn p(base: u32, index: u32) -> f32 { return data[base + index]; }
 fn tableBase(base: u32) -> u32 { return TABLES_OFFSET + u32(p(base, 55u)) * TABLE_STRIDE; }
@@ -114,17 +126,26 @@ fn gamutForward(jmh:vec3<f32>,jx:f32,reachValue:f32,base:u32)->vec3<f32>{let j=j
 fn jmhToTarget(jmh:vec3<f32>,base:u32)->vec3<f32>{let r=radians(jmh.z);let a=pow(jmh.x*.00999999978,.879464149);let b=jmh.y*cos(r);let c=jmh.y*sin(r);let ra=vec3<f32>(.0323680267*a+2.07657631e-5*b+1.32606210e-5*c,.0323680267*a-4.10250432e-5*b-1.20174373e-5*c,.0323680267*a-1.01296409e-5*b-2.90076074e-4*c);let lim=min(abs(ra),vec3<f32>(.99000001));let lms=sign(ra)*pow(27.1299992*lim/(1.0-lim),vec3<f32>(2.38095236));return matData(base+27u,lms);}
 fn profileBase(id: u32) -> u32 { if (id == 0u) { return 0u; } if (id == 1u) { return PROFILE_STRIDE; } if (id == 2u) { return 2u * PROFILE_STRIDE; } return 3u * PROFILE_STRIDE; }
 fn forwardAces(acescg:vec3<f32>,base:u32)->vec3<f32>{let ap0=acescgToAp0(acescg);let start=rgbToJmh(ap0,base,false);let chroma=chromaForward(start,base);let compressed=gamutForward(chroma,chroma.x,reachSample(start.z,base),base);return clamp3(jmhToTarget(compressed,base),0.0,p(base,37u));}
+fn imageDisplay(ap0: vec3<f32>, profile: u32, scale203: bool) -> vec3<f32> {
+  let sourceXyz = ap0ToXyz(ap0);
+  let scale = select(1.0, 2.03, scale203);
+  let scene = inverseAces(sourceXyz * scale, 2u * PROFILE_STRIDE);
+  return forwardAces(scene, profileBase(profile));
+}
 fn decodeJhk(j:f32,x:f32,y:f32)->vec3<f32>{let sx=2.0*x-1.0;let sy=2.0*y-1.0;let radius=length(vec2<f32>(sx,sy));let saturation=6.90050270035*(exp(3.18580357858*radius)-1.0);let h=j*J_PEAK;let u=(.007/.525)*saturation;let denominator=sqrt(h*h+(33.0*u)*(33.0*u))+33.0*u;let ja=select(0.0,h*h/denominator,denominator>0.0);let chroma=u*ja;let light=sqrt(max(h*h-66.0*chroma,0.0));var hue=degrees(atan2(-sx,sy));if(hue<0.0){hue+=360.0;}let hr=radians(hue);let ecc=1.0-.0582*cos(hr)-.0258*cos(2.0*hr)-.1347*cos(3.0*hr)+.0289*cos(4.0*hr)-.1475*sin(hr)-.0308*sin(2.0*hr)+.0385*sin(3.0*hr)+.0096*sin(4.0*hr);let colorfulness=chroma*31.7941491565/35.0;let radiusOpponent=colorfulness/(43.0*.8*ecc);let ach=31.7941491565*pow(max(light,0.0)/100.0,1.0/(.525*1.79622776602));let oa=radiusOpponent*cos(hr);let ob=radiusOpponent*sin(hr);let c0=(460.0*(ach+.305)+451.0*oa+288.0*ob)/1403.0;let c1=(460.0*(ach+.305)-891.0*oa-261.0*ob)/1403.0;let c2=(460.0*(ach+.305)-220.0*oa-6300.0*ob)/1403.0;let fl=.466468345005;let lower=400.0*pow(fl*.26/100.0,.42)/(27.13+pow(fl*.26/100.0,.42));let upper=400.0*pow(fl*150.0/100.0,.42)/(27.13+pow(fl*150.0/100.0,.42));let slope=1.68*27.13*fl*pow(fl*150.0/100.0,-.58)/pow(27.13+pow(fl*150.0/100.0,.42),2.0);let response=vec3<f32>(c0,c1,c2)-vec3<f32>(.1);let middle=clamp(response,vec3<f32>(lower),vec3<f32>(upper));let mid=100.0/fl*pow(27.13*middle/(400.0-middle),vec3<f32>(1.0/.42));let low=.26*response/lower;let up=vec3<f32>(150.0)+(response-vec3<f32>(upper))/slope;let cone=select(select(low,mid,response>=vec3<f32>(lower)),up,response>=vec3<f32>(upper));let adapted=cone/vec3<f32>(1.0250779612,.9837843319,.9216705823);return vec3<f32>(1.862067855*adapted.x-1.011254631*adapted.y+.149186775*adapted.z,.387526543*adapted.x+.621447442*adapted.y-.008973985*adapted.z,-.015841499*adapted.x-.034122938*adapted.y+1.049964437*adapted.z)/100.0;}
 @compute @workgroup_size(${WORKGROUP}, ${WORKGROUP}) fn main(@builtin(global_invocation_id) id: vec3<u32>) { if(id.x>=settings.width||id.y>=settings.height){return;} let x=select(.5,f32(id.x)/f32(settings.width-1u),settings.width>1u);let y=select(.5,1.0-f32(id.y)/f32(settings.height-1u),settings.height>1u);let radius=length(vec2<f32>(2.0*x-1.0,2.0*y-1.0));let index=id.y*settings.width+id.x;if(radius>1.0){output[index]=vec4<f32>(0.0);return;}let xyz=decodeJhk(settings.j,x,y);let source=xyzToP3(xyz);if(any(source<vec3<f32>(0.0))||any(source>vec3<f32>(SOURCE_PEAK))){output[index]=vec4<f32>(0.0);return;}let scene=inverseAces(xyz*SOURCE_SCALE,2u*PROFILE_STRIDE);let base=profileBase(settings.profile);output[index]=vec4<f32>(forwardAces(scene,base),1.0); }
+@compute @workgroup_size(${WORKGROUP}) fn image_main(@builtin(global_invocation_id) id: vec3<u32>) { if(id.x>=settings.width){return;} let index=id.x; let ap0=input_pixels[index].xyz; let rgb=imageDisplay(ap0,settings.profile,settings.scale203!=0u); output[index]=vec4<f32>(rgb,1.0); }
 `;
 
 export class SliceWebGpuRenderer {
   private readonly gpu: Gpu | undefined;
   private device: Gpu | undefined;
   private pipeline: Gpu | undefined;
+  private imagePipeline: Gpu | undefined;
   private parameters: Gpu | undefined;
   private settings: Gpu | undefined;
   private parametersBytes = 0;
+  private preparing: Promise<void> | undefined;
 
   constructor() {
     this.gpu = (globalThis.navigator as Navigator & { gpu?: Gpu } | undefined)?.gpu;
@@ -134,31 +155,39 @@ export class SliceWebGpuRenderer {
 
   private async prepare(parameters: Float32Array) {
     if (this.pipeline) return;
-    const adapter = await this.gpu?.requestAdapter();
-    if (!adapter) throw new Error("WebGPU adapter unavailable");
-    const device = await adapter.requestDevice();
-    const usage = (globalThis as any).GPUBufferUsage;
-    this.parametersBytes = parameters.byteLength;
-    this.parameters = device.createBuffer({ size: this.parametersBytes, usage: usage.STORAGE | usage.COPY_DST });
-    this.settings = device.createBuffer({ size: 16, usage: usage.UNIFORM | usage.COPY_DST });
-    device.queue.writeBuffer(this.parameters, 0, parameters.buffer, parameters.byteOffset, parameters.byteLength);
-    this.pipeline = device.createComputePipeline({ layout: "auto", compute: { module: device.createShaderModule({ code: shader }), entryPoint: "main" } });
-    this.device = device;
+    if (this.preparing) return this.preparing;
+    this.preparing = (async () => {
+      const adapter = await this.gpu?.requestAdapter();
+      if (!adapter) throw new Error("WebGPU adapter unavailable");
+      const device = await adapter.requestDevice();
+      const usage = gpuBufferUsage();
+      this.parametersBytes = parameters.byteLength;
+      this.parameters = device.createBuffer({ size: this.parametersBytes, usage: usage.STORAGE | usage.COPY_DST });
+      this.settings = device.createBuffer({ size: 24, usage: usage.UNIFORM | usage.COPY_DST });
+      device.queue.writeBuffer(this.parameters, 0, parameters.buffer, parameters.byteOffset, parameters.byteLength);
+      const module = device.createShaderModule({ code: shader });
+      this.pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
+      this.imagePipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "image_main" } });
+      this.device = device;
+    })();
+    try { await this.preparing; } finally { this.preparing = undefined; }
   }
 
   async render(parameters: Float32Array, viewIndex: number, j: number, width: number, height: number): Promise<Float32Array> {
     await this.prepare(parameters);
     const device = this.device!;
-    const usage = (globalThis as any).GPUBufferUsage;
+    const usage = gpuBufferUsage();
     const outputBytes = width * height * 16;
     const output = device.createBuffer({ size: outputBytes, usage: usage.STORAGE | usage.COPY_SRC });
     const readback = device.createBuffer({ size: outputBytes, usage: usage.COPY_DST | usage.MAP_READ });
-    const settings = new ArrayBuffer(16);
+    const settings = new ArrayBuffer(24);
     const settingsView = new DataView(settings);
     settingsView.setUint32(0, width, true);
     settingsView.setUint32(4, height, true);
     settingsView.setUint32(8, viewIndex, true);
     settingsView.setFloat32(12, j, true);
+    settingsView.setUint32(16, 0, true);
+    settingsView.setUint32(20, 0, true);
     device.queue.writeBuffer(this.settings, 0, settings);
     const bind = device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: this.settings } }, { binding: 1, resource: { buffer: this.parameters } }, { binding: 2, resource: { buffer: output } }] });
     const commands = device.createCommandEncoder();
@@ -169,11 +198,61 @@ export class SliceWebGpuRenderer {
     pass.end();
     commands.copyBufferToBuffer(output, 0, readback, 0, outputBytes);
     device.queue.submit([commands.finish()]);
-    await readback.mapAsync((globalThis as any).GPUMapMode.READ);
+    await readback.mapAsync(gpuMapMode().READ);
     const result = new Float32Array(readback.getMappedRange().slice(0));
     readback.unmap();
     output.destroy();
     readback.destroy();
     return result;
+  }
+
+  async renderImage(parameters: Float32Array, viewIndex: number, scale203: boolean, pixels: Float32Array): Promise<Float32Array> {
+    if (pixels.length === 0 || pixels.length % 3 !== 0) throw new Error("Invalid image pixel buffer.");
+    await this.prepare(parameters);
+    const device = this.device!;
+    const usage = gpuBufferUsage();
+    const count = pixels.length / 3;
+    const input = new Float32Array(count * 4);
+    for (let i = 0; i < count; i += 1) {
+      input[i * 4] = pixels[i * 3];
+      input[i * 4 + 1] = pixels[i * 3 + 1];
+      input[i * 4 + 2] = pixels[i * 3 + 2];
+    }
+    const inputBytes = input.byteLength;
+    const outputBytes = count * 16;
+    const inputBuffer = device.createBuffer({ size: inputBytes, usage: usage.STORAGE | usage.COPY_DST });
+    const output = device.createBuffer({ size: outputBytes, usage: usage.STORAGE | usage.COPY_SRC });
+    const readback = device.createBuffer({ size: outputBytes, usage: usage.COPY_DST | usage.MAP_READ });
+    device.queue.writeBuffer(inputBuffer, 0, input.buffer, input.byteOffset, input.byteLength);
+    const settings = new ArrayBuffer(24);
+    const settingsView = new DataView(settings);
+    settingsView.setUint32(0, count, true);
+    settingsView.setUint32(4, 1, true);
+    settingsView.setUint32(8, viewIndex, true);
+    settingsView.setFloat32(12, 0, true);
+    settingsView.setUint32(16, 1, true);
+    settingsView.setUint32(20, scale203 ? 1 : 0, true);
+    device.queue.writeBuffer(this.settings, 0, settings);
+    const bind = device.createBindGroup({ layout: this.imagePipeline!.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: this.settings } },
+      { binding: 1, resource: { buffer: this.parameters } },
+      { binding: 2, resource: { buffer: output } },
+      { binding: 3, resource: { buffer: inputBuffer } },
+    ] });
+    const commands = device.createCommandEncoder();
+    const pass = commands.beginComputePass();
+    pass.setPipeline(this.imagePipeline!);
+    pass.setBindGroup(0, bind);
+    pass.dispatchWorkgroups(Math.ceil(count / WORKGROUP));
+    pass.end();
+    commands.copyBufferToBuffer(output, 0, readback, 0, outputBytes);
+    device.queue.submit([commands.finish()]);
+    await readback.mapAsync(gpuMapMode().READ);
+    const result = new Float32Array(readback.getMappedRange().slice(0));
+    readback.unmap();
+    inputBuffer.destroy(); output.destroy(); readback.destroy();
+    const rgb = new Float32Array(count * 3);
+    for (let i = 0; i < count; i += 1) rgb.set(result.subarray(i * 4, i * 4 + 3), i * 3);
+    return rgb;
   }
 }

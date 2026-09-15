@@ -4,19 +4,31 @@ export const J_SNAP_DISTANCE = 0.005;
 // Background is a normalized J' neutral coordinate.
 export const BACKGROUND_MAX = 1.0;
 export const J_HK_PEAK = 217.2768649129496;
-export const J_REFERENCE_WHITE = 76.02655940839014 / J_HK_PEAK;
+export const J_REFERENCE_WHITE = 100 / J_HK_PEAK;
 export const ROLLING_BALL_SENSITIVITY = 0.25;
 export const ROLLING_BALL_MAX_ACCELERATION = 4;
 export const ROLLING_BALL_ACCELERATION_SPEED = 2.5;
 export const ROLLING_BALL_VELOCITY_SMOOTHING_MS = 45;
 
 export type Point = { x: number; y: number };
+export type CovarianceEllipse = {
+  mean: Point;
+  covariance: [number, number, number, number];
+  major: number;
+  minor: number;
+  angle: number;
+  confidence: number;
+  sampleCount: number;
+  subsetSize: number;
+};
 export type SnapCandidate =
   | { kind: "neutral"; x: number; y: number }
-  | { kind: "patch"; index: number; x: number; y: number };
+  | { kind: "patch"; index: number; x: number; y: number }
+  | { kind: "average"; x: number; y: number };
 export type JSnapTarget =
   | { kind: "reference"; value: number }
-  | { kind: "patch"; value: number };
+  | { kind: "patch"; value: number }
+  | { kind: "average"; value: number };
 export type SnapAxis = "j" | "xy" | null;
 
 export function clamp(value: number, minimum: number, maximum: number): number {
@@ -163,12 +175,17 @@ export function nearestSnapTarget(
   y: number,
   patches: readonly Point[],
   neutral: Point = { x: 0.5, y: 0.5 },
+  average?: Point,
 ): SnapCandidate | null {
   const nearestPatch = nearestPoint(x, y, patches);
   const neutralDistance = Math.hypot(x - neutral.x, y - neutral.y);
+  const averageDistance = average ? Math.hypot(x - average.x, y - average.y) : Number.POSITIVE_INFINITY;
+  const nearestDistance = nearestPatch?.distance ?? Number.POSITIVE_INFINITY;
+  if (average && averageDistance <= PATCH_ENTRY_RADIUS && averageDistance < nearestDistance && averageDistance < neutralDistance)
+    return { kind: "average", x: average.x, y: average.y };
   if (
     neutralDistance <= PATCH_ENTRY_RADIUS &&
-    (nearestPatch === null || neutralDistance <= nearestPatch.distance)
+    neutralDistance <= nearestDistance
   ) {
     return { kind: "neutral", x: neutral.x, y: neutral.y };
   }
@@ -190,9 +207,11 @@ export function nearestJSnapTarget(
   patchJ?: number,
   referenceJ = J_REFERENCE_WHITE,
   threshold = J_SNAP_DISTANCE,
+  averageJ?: number,
 ): JSnapTarget | null {
   const candidates: JSnapTarget[] = [];
   if (Number.isFinite(patchJ)) candidates.push({ kind: "patch", value: patchJ as number });
+  if (Number.isFinite(averageJ)) candidates.push({ kind: "average", value: averageJ as number });
   if (Number.isFinite(referenceJ)) candidates.push({ kind: "reference", value: referenceJ });
   let nearest: JSnapTarget | null = null;
   let nearestDistance = Number.POSITIVE_INFINITY;
@@ -225,6 +244,7 @@ export function projectSnapCode(
   patchJ?: number,
   axis: SnapAxis = null,
   previous = real,
+  averageJ?: number,
 ): { j: number; x: number; y: number } {
   const projected = axis === null ? { ...real } : { ...previous };
   if (axis === "j") projected.j = real.j;
@@ -236,6 +256,9 @@ export function projectSnapCode(
     const jTarget = nearestJSnapTarget(
       real.j,
       target?.kind === "patch" ? patchJ : undefined,
+      J_REFERENCE_WHITE,
+      J_SNAP_DISTANCE,
+      averageJ,
     );
     if (jTarget) projected.j = jTarget.value;
   }
@@ -253,6 +276,167 @@ export function snapCoordinate(
   threshold = PATCH_SNAP_DISTANCE,
 ): number {
   return Math.abs(value - target) <= threshold ? target : value;
+}
+
+/** Return the native integer pixels whose centers lie in a circular radius. */
+export function neighborhoodPixels(
+  centerX: number,
+  centerY: number,
+  width: number,
+  height: number,
+  radius = 3,
+): Array<[number, number]> {
+  const w = Math.max(0, Math.floor(width));
+  const h = Math.max(0, Math.floor(height));
+  const cx = Math.max(0, Math.min(w - 1, Math.round(centerX)));
+  const cy = Math.max(0, Math.min(h - 1, Math.round(centerY)));
+  const r = Math.max(0, Number.isFinite(radius) ? radius : 3);
+  const out: Array<[number, number]> = [];
+  const minX = Math.max(0, Math.floor(cx - r));
+  const maxX = Math.min(w - 1, Math.ceil(cx + r));
+  const minY = Math.max(0, Math.floor(cy - r));
+  const maxY = Math.min(h - 1, Math.ceil(cy + r));
+  for (let y = minY; y <= maxY; y += 1)
+    for (let x = minX; x <= maxX; x += 1)
+      if (Math.hypot(x - cx, y - cy) <= r + 1e-12) out.push([x, y]);
+  return out;
+}
+
+const COVARIANCE_FLOOR = 1e-9;
+
+function comparePoint(a: Point, b: Point): number {
+  return a.x - b.x || a.y - b.y;
+}
+
+function compareIndexSet(a: readonly number[], b: readonly number[]): number {
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return a.length - b.length;
+}
+
+function covarianceForIndices(
+  points: readonly Point[],
+  indices: readonly number[],
+): { mean: Point; covariance: [number, number, number, number]; determinant: number } {
+  const mean = indices.reduce(
+    (sum, index) => ({ x: sum.x + points[index].x, y: sum.y + points[index].y }),
+    { x: 0, y: 0 },
+  );
+  mean.x /= indices.length;
+  mean.y /= indices.length;
+  let xx = 0, xy = 0, yy = 0;
+  for (const index of indices) {
+    const dx = points[index].x - mean.x;
+    const dy = points[index].y - mean.y;
+    xx += dx * dx;
+    xy += dx * dy;
+    yy += dy * dy;
+  }
+  const denominator = Math.max(1, indices.length - 1);
+  xx = xx / denominator + COVARIANCE_FLOOR;
+  xy /= denominator;
+  yy = yy / denominator + COVARIANCE_FLOOR;
+  const determinant = Math.max(COVARIANCE_FLOOR ** 2, xx * yy - xy * xy);
+  return { mean, covariance: [xx, xy, xy, yy], determinant };
+}
+
+function deterministicSeedSets(count: number, subsetSize: number): number[][] {
+  const seedCount = Math.min(32, count);
+  const seeds: number[][] = [];
+  for (let seed = 0; seed < seedCount; seed += 1) {
+    const phase = Math.floor(seed * count / seedCount);
+    const indices = Array.from({ length: subsetSize }, (_, index) =>
+      (phase + Math.floor(index * count / subsetSize)) % count,
+    ).sort((a, b) => a - b);
+    if (!seeds.some(existing => compareIndexSet(existing, indices) === 0)) seeds.push(indices);
+  }
+  return seeds;
+}
+
+function cStep(points: readonly Point[], indices: readonly number[], subsetSize: number): number[] {
+  const { mean, covariance, determinant } = covarianceForIndices(points, indices);
+  const [xx, xy, , yy] = covariance;
+  return points
+    .map((point, index) => {
+      const dx = point.x - mean.x;
+      const dy = point.y - mean.y;
+      const distance = (yy * dx * dx - 2 * xy * dx * dy + xx * dy * dy) / determinant;
+      return { index, distance: Number.isFinite(distance) ? distance : Number.POSITIVE_INFINITY };
+    })
+    .sort((a, b) => a.distance - b.distance || a.index - b.index)
+    .slice(0, subsetSize)
+    .map(entry => entry.index)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * Build a deterministic Fast-MCD 95%-confidence ellipse. The small fixed seed
+ * budget keeps continuous image-locator updates bounded while resisting a few
+ * very different pixels in the sampled neighborhood.
+ */
+export function covarianceEllipse(
+  points: readonly Point[],
+  confidence = 0.95,
+): CovarianceEllipse | null {
+  const finitePoints = points
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .map(point => ({ x: point.x, y: point.y }))
+    .sort(comparePoint);
+  if (!finitePoints.length) return null;
+  const subsetSize = finitePoints.length === 1
+    ? 1
+    : Math.max(2, Math.ceil(finitePoints.length / 2));
+  let selected = Array.from({ length: subsetSize }, (_, index) => index);
+  let selectedStats = covarianceForIndices(finitePoints, selected);
+  for (const seed of deterministicSeedSets(finitePoints.length, subsetSize)) {
+    let candidate = seed;
+    for (let step = 0; step < 5; step += 1) {
+      const next = cStep(finitePoints, candidate, subsetSize);
+      if (compareIndexSet(candidate, next) === 0) break;
+      candidate = next;
+    }
+    const stats = covarianceForIndices(finitePoints, candidate);
+    const determinantDifference = stats.determinant - selectedStats.determinant;
+    if (
+      determinantDifference < -1e-24 ||
+      (Math.abs(determinantDifference) <= 1e-24 && compareIndexSet(candidate, selected) < 0)
+    ) {
+      selected = candidate;
+      selectedStats = stats;
+    }
+  }
+  const { mean, covariance } = selectedStats;
+  const [xx, xy, , yy] = covariance;
+  const trace = xx + yy;
+  const discriminant = Math.sqrt(Math.max(0, (xx - yy) * (xx - yy) + 4 * xy * xy));
+  const lambdaMajor = Math.max(0, (trace + discriminant) / 2);
+  const lambdaMinor = Math.max(0, (trace - discriminant) / 2);
+  const angle = 0.5 * Math.atan2(2 * xy, xx - yy);
+  // Chi-square(2) quantile is -2 ln(1 - confidence); clamp to a useful
+  // finite interval for callers that provide an accidental invalid value.
+  const c = Math.min(1 - Number.EPSILON, Math.max(Number.EPSILON, confidence));
+  const scale = Math.sqrt(-2 * Math.log(1 - c));
+  return {
+    mean,
+    covariance,
+    major: Math.sqrt(Math.max(COVARIANCE_FLOOR, lambdaMajor)) * scale,
+    minor: Math.sqrt(Math.max(COVARIANCE_FLOOR, lambdaMinor)) * scale,
+    angle,
+    confidence: c,
+    sampleCount: finitePoints.length,
+    subsetSize,
+  };
+}
+
+export function ellipsePoint(ellipse: CovarianceEllipse, t: number): Point {
+  const theta = Number.isFinite(t) ? t : 0;
+  const c = Math.cos(theta), s = Math.sin(theta);
+  const ca = Math.cos(ellipse.angle), sa = Math.sin(ellipse.angle);
+  return {
+    x: ellipse.mean.x + ellipse.major * c * ca - ellipse.minor * s * sa,
+    y: ellipse.mean.y + ellipse.major * c * sa + ellipse.minor * s * ca,
+  };
 }
 
 export function encodeSrgb(value: number): number {

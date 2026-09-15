@@ -42,15 +42,14 @@ J' is linear in J_HK, not in luminance:
 
 ```text
 J_HK = J' * 217.2768649129496
-100-nit neutral: source P3 = 100/203, J_HK = 76.02655940839014
-fixed 100-nit locator: J' = 0.34990637148068954
 203-nit neutral: source P3 = 1, J_HK = 100, J' = 0.4602422813863053
 1000-nit neutral: source P3 = 1000/203, J' = 1
 ```
 
-J' = 0 means J_HK = 0. The 100-nit locator and the 203-nit appearance
-reference are distinct. The old 183.7488220212894 endpoint must not be used by
-the browser; legacy APIs retain it only for regression coverage.
+J' = 0 means J_HK = 0. The 203-nit HDR white is the sole browser ruler
+reference and J' snapping target. The former 100-nit locator is not shown or
+used for browser snapping; legacy APIs may retain it only for regression
+coverage.
 
 The x'/y' encoding and orientation remain:
 
@@ -172,21 +171,18 @@ hidden imported color that disagrees with the controls.
 
 ## Background
 
-The range element and adjacent number both show **surround J' in normalized
-0..1**, with three decimals. Default is 0.15. Its neutral source RGB is derived
-from `(backgroundJ', 0.5, 0.5)` through the same 2.03 scale, fixed inverse HDR
-P3, and selected forward view as foreground. Background J'=1 is the 1000-nit
-neutral; there is no sRGB-shaped 0..10 UI mapping or above-peak surround state.
+Background surround J' remains normalized 0..1 with a default of 0.15, but has
+no range control or numeric readout. Drag the picked-color preview vertically
+to adjust it: desktop click-hold/move/release and mobile touch/pen hold-drag/
+release both use relative movement, the shared velocity smoothing and
+acceleration profile, clamping, and no overscroll. A click without meaningful
+vertical travel opens the view menu. The hollow triangle on the J' ruler is the
+only background value indicator. Preserve the existing foreground-matching
+background snap band during this gesture.
 
-The foreground-matching marker solves the source neutral having the displayed
-J_HK. Snap Background within 0.02 normalized slider-position distance of that
-marker. Neutral foreground and its matching surround must yield identical PNG
-samples in all four views. View switches never modify Background or its marker.
-
-Keep Background label, number, and slider on one horizontal line, with the
-slider immediately to the label's right. Keep the existing 0.020 normalized
-slider snap band and put the foreground-matching locator at displayed
-foreground J'.
+Its neutral source RGB is derived from `(backgroundJ', 0.5, 0.5)` through the
+same fixed inverse HDR P3 and selected forward view. View switches never modify
+Background or its marker.
 
 The preview PNG remains square and is displayed at exactly the height of the
 adjacent ACEScg/linear value/encoded AP1 value/ColorChecker-name stack. Always
@@ -212,12 +208,12 @@ switch. Show each patch at its exact x'/y' position with its name when active.
   candidate only within distance 0.005. Release as soon as the real position
   leaves that band, even while still inside the wider halo.
 - J' snaps independently within 0.005 to the nearest active patch J' or the
-  fixed 100-nit locator. Exact ties prefer the patch.
+  fixed 203-nit locator. Exact ties prefer the patch.
 - Display and calculate using snapped values; never overwrite real coordinates.
   Editing J' leaves displayed X/Y unchanged; moving X/Y leaves displayed J'
   unchanged. Neutral supplies no patch J' or ColorChecker name.
-- The active patch gets an exact J' wheel locator. No snap cross is drawn on
-  the rolling pad. Slice indicators and readouts carry the selection.
+- The active patch gets an exact J' wheel locator. The removed rolling pad has
+  no residual snap indicator; slice indicators and readouts carry selection.
 
 ## Picking controls and responsive layout
 
@@ -225,7 +221,7 @@ Keep a vertical DaVinci-style J' rolling wheel immediately to the left of the
 gamut slice at every viewport width. Its surface is a restrained, flat repeating
 tick texture with no current-value indicator. A separate static ruler to the
 wheel's right carries evenly spaced 0.0..1.0 labels, a white triangle for the
-displayed J', the highlighted 100-nit reference, and the active ColorChecker
+displayed J', the highlighted 203-nit reference, and the active ColorChecker
 patch locator. Put a three-decimal J' numeric input below the wheel and ruler.
 The complete J' companion control is exactly as tall as the gamut viewport.
 The rolling-pad/rolling-ball UI remains absent, with no Temp/Tint or
@@ -260,7 +256,7 @@ button; the next primary click anywhere confirms, is consumed, and does not
 activate the underlying control. Touch and pen retain direct pointer-captured
 dragging through release or cancellation. Escape, view changes, and hex imports
 cancel active mouse tracking without undoing the current value. Pointer Lock is
-not used.
+not used for the J' wheel.
 
 While snapped, the texture continues to follow raw pointer movement; the ruler
 triangle, numeric input, ARIA value, calculation, and images use
@@ -291,3 +287,229 @@ Preserve official OCIO group order: ACEScg to ACES2065-1, ACES 2.0 view, then
 output XYZ. Do not pre-clamp negative AP0 matrix values. Interpret view output
 XYZ in 100-nit units. Legacy polar and profile-local normalized Rust exports
 may remain for regression tests, but the browser imports only picker_* APIs.
+
+## Image color locator
+
+The picker has a visible, compact image-locator panel stacked below the picker,
+including before an image is loaded. Its empty state contains a Load image
+button. The panel never introduces document scrolling: on narrow screens its
+controls and viewport shrink so the complete page still fits the 360x645 CSS
+pixel/DPR-3 baseline.
+
+The image toolbar places an `Image Options` button immediately beside `Load
+image`. Source interpretation controls are contained in an accessible modal
+dialog opened by that button; they do not consume normal page layout space
+while closed. The dialog closes on its close button, Escape, or an outside
+backdrop click and restores focus to the options button.
+
+### Loading and interpretation
+
+Loading uses the same source decoder and interpretation contract as
+`/home/rust/workspace/colors/web/decompose.html` and its worker. Supported
+formats are DNG, EXR, JPEG/JPG, PNG, HEIC, and HEIF. The worker first inspects
+the file and reports dimensions, format, warnings, and embedded interpretation
+availability.
+
+Interpretation precedence is strict:
+
+1. A usable embedded ICC profile is preferred.
+2. If no usable ICC exists, usable format metadata is used: PNG cICP,
+   EXR chromaticities, or HEIF nclx metadata.
+3. If neither is usable, assume `sRGB (Rec.709)` primaries plus `sRGB`
+   transfer and continue loading; opening Image Options shows a warning that
+   this interpretation was assumed.
+4. A manually selected Primaries/Transfer pair overrides embedded metadata.
+5. DNG always uses its embedded camera calibration and linear ACES2065-1/AP0;
+   manual source interpretation is unavailable for DNG.
+
+Manual choices exactly match the reference loader: Rec.709/sRGB, Display
+P3/P3-D65, Rec.2020, Adobe RGB, ACEScg, ACES2065-1, Linear, sRGB, Gamma 1.8,
+Gamma 2.2, Gamma 2.4/BT.1886, BT.709/BT.2020, PQ/ST 2084, and HLG/BT.2100.
+Changing interpretation reuses the retained native raster and re-prepares it;
+it never silently downsamples analysis data. The visible image is the same
+decoded, interpreted, bounded preview style used by the reference loader.
+For image appearance, expose a per-image `scale by 2.03` choice before the
+fixed HDR-P3 inverse. It defaults on for SDR-oriented sources and off for
+HDR-native EXR/DNG and embedded PQ/HLG sources, and the user may override it.
+Confirmed HEIC/HEIF gain-map images default this choice off; explicit user
+changes always win. The worker reports gain-map metadata detection separately
+from successful auxiliary-image decoding.
+The choice re-renders the
+loaded image and loupe only; sampling/averaging uses the declared raster units
+to recover the same canonical physical authoring path, so equivalent checked
+and unchecked representations cannot move the mean, ellipse, or average snap
+target.
+
+For image sampling, the Scale ×2.03 choice also declares the units of the
+prepared linear raster. When checked, values are interpreted in the picker’s
+203-nit source units (P3 peak 10/2.03) and are multiplied by 2.03 before the
+fixed HDR inverse. When unchecked, values are interpreted as absolute
+100-nit HDR units (P3 peak 10.0); they are divided by 2.03 only when mapped
+back to normalized authoring coordinates and are passed unchanged to the HDR
+inverse. These two representations of the same physical color must yield the
+same ACEScg and J′/x′/y′ result. Bright HDR pixels up to the 10.0 peak are
+therefore accepted when the option is unchecked.
+
+### Image coordinates and interaction
+
+The image row is laid out as `loupe | image frame | zoom controls` at every
+viewport width. The image preview uses a cover-style 1x base scale (overflow is
+allowed so the frame has no intentional black border), with 2x and 5x buttons
+selecting larger multiples. Pointer coordinates are mapped through the
+transformed image rectangle to native pixel coordinates, clamped to native
+bounds, and retained as floating point until the worker rounds the sampling
+center to the nearest native pixel.
+
+Panning moves the image opposite pointer/finger motion. The image is moved
+first and clamped to its frame bounds; any movement remaining after a bound is
+reached moves the crosshair instead. The crosshair remains centered in the
+frame whenever the image can still move. Changing zoom preserves the selected
+native coordinate where possible and re-clamps the transform.
+
+Image geometry is deterministic: the native crosshair coordinate, image and
+viewport dimensions, and zoom factor uniquely determine the rendered image
+offset and screen-space crosshair position. There is no separately accumulated
+pan or screen-coordinate state. When an image edge reaches the frame edge,
+further motion moves the crosshair toward that gesture direction; reversing
+direction first brings the crosshair back toward the frame center, then moves
+the image again.
+
+The transparent overlay is a crosshair with a small central square.
+The square loupe is a sibling panel on the left side of the image frame in the
+same row and remains visible at the last sampled location after confirmation.
+It shows interpreted source pixels
+
+with nearest-neighbor scaling, `image-rendering: pixelated`, disabled canvas
+image smoothing, and sharp square pixel edges.
+
+Startup and replacement invariants:
+
+- ColorChecker dots and their dim rings are painted as soon as ColorChecker
+  data arrives; they do not depend on a subsequent picker gesture.
+- During image inspection/preparation, the image row and zoom controls remain
+  compact/hidden until the replacement raster, native pointer, deterministic
+  geometry, and crosshair are ready. The image and crosshair are published
+  atomically after off-DOM image decoding.
+- The default image zoom is 2x (including after loading a replacement image),
+  while the 1x/2x/5x controls remain intrinsic-width controls.
+
+Background preview gestures are live: every newest accepted background J'
+state may update the encoded preview during a rapid drag, with stale worker
+responses rejected by generation/state tokens.
+
+Normal application text is not selectable. Native editable form controls keep
+their normal editing/selecting behavior.
+
+The background J' ruler locator is a hollow triangle with a white outline. The
+current picked J' locator remains a solid white triangle and fills the hollow
+marker when the two values coincide.
+
+### Image appearance transform performance
+
+Changing the selected display transform or the appearance-only Scale ×2.03
+option regenerates the bounded image preview and loupe through a WebGPU-first
+pixel pipeline when WebGPU is available. The transform uses the official ACES
+2.0 fixed-function equation ordering and original OCIO GPU table payloads
+extracted by the `generate_aces_tables.py` workflow; the browser does not use
+an approximate curve or the non-official Rust implementation as its oracle.
+
+The GPU path converts prepared linear AP0 pixels through ACEScg, the fixed
+HDR 1000-nit P3-D65 inverse, the selected forward view, and selected display
+primaries, returning display-linear RGB to the existing SDR/PQ PNG encoder.
+The same path is used for the main image and loupe. If WebGPU is unavailable
+or fails validation, a fixed pool of two workers performs the identical WASM
+conversion in bounded 32,768-pixel chunks with deterministic output ordering.
+The bounded AP0 preview raster and GPU device, pipelines, uniform/storage
+tables are cached, so view/scale changes do not decode or reinterpret source
+pixels again.
+
+While a view or appearance transform is pending, the previous decoded image
+and loupe remain visible under a dim layer with an `Applying display
+transform…` banner. Only a complete, current-generation PNG replaces them;
+superseded or failed work cannot overwrite a newer result. Main-image and
+loupe work is coalesced independently to the newest request, and the dim layer
+is removed only after both matching replacements are ready.
+
+The transformed locator image and loupe are direct `<img>` elements backed by
+the generated PNG bytes. Neither is decoded into or painted through a 2D
+canvas. The loupe uses CSS `image-rendering: pixelated` for sharp square source
+pixels. The only locator canvas is the transparent crosshair overlay; it requests a
+Display-P3 2D context when available, matching the gamut indicator canvas so it
+does not force an HDR image stack through an sRGB compositing path. Generated
+HDR images request `dynamic-range-limit: no-limit` where the browser supports
+that property; downloaded PNG bytes retain their 16-bit PQ and cICP metadata.
+
+For a mouse, the first primary click places the crosshair and arms tracking,
+then requests Pointer Lock on the image frame so the system pointer is hidden.
+Locked `movementX/Y` uses the same 45 ms velocity smoothing and 1x..4x
+acceleration profile as touch/pen, followed by the pan/clamp algorithm above.
+A second primary click anywhere confirms, exits Pointer Lock, is consumed, and
+ends tracking. Escape or any Pointer Lock exit ends active tracking without
+discarding the last confirmed analysis. If Pointer Lock is unavailable or
+denied, fall back to the existing visible-pointer document-level click-follow
+tracking so the workflow remains usable.
+
+For touch and pen, the initial contact establishes the gesture origin but does
+not move the crosshair. Subsequent movement is relative, pointer-captured, and
+uses the gamut slice's 45 ms smoothed velocity and 1x..4x acceleration profile.
+Horizontal movement changes image x; upward movement changes image y. There is
+no inertia.
+
+### Continuous sample analysis
+
+Sampling updates continuously from the latest coalesced pointer location for
+both desktop tracking and touch/pen dragging. Worker sample responses carry an
+image generation and monotonically increasing sample token; stale responses
+are ignored. Confirmation only ends desktop tracking and does not trigger a
+different calculation path.
+
+The worker includes every native pixel whose center lies within a circular
+radius of exactly 3 px around the rounded pointer center. It reads complete
+native rows so edge-clipped neighborhoods preserve source x coordinates.
+Non-finite, invalid, negative-source, and above-peak samples are rejected and
+reported in the rejected count; rejected samples do not contribute to means or
+the ellipse.
+
+Each accepted sample follows the fixed numerical path selected by the image
+unit declaration:
+
+1. Decode the selected source interpretation to linear AP0/ACES2065-1.
+2. Convert AP0 to ACEScg.
+3. If Scale ×2.03 is checked, treat the raster as 203-nit source units and
+   multiply XYZ by 2.03; if unchecked, treat it as absolute 100-nit HDR units
+   and pass physical XYZ through unchanged. Apply the fixed inverse ACES 2.0
+   HDR 1000 nits P3-D65 path, yielding canonical ACEScg.
+4. For normalized coordinates, divide unchecked absolute XYZ by 2.03 (the
+   checked path is already in source units), then solve canonical J'/x'/y'.
+
+The per-image scale checkbox is deliberately not consulted by this analysis
+path. It is applied only while converting AP0 samples to the selected-view
+display-linear RGB used for the image and loupe PNGs.
+
+The image status reports native center, accepted/rejected/total counts, and
+the arithmetic J'/x'/y' mean. A zero-accepted neighborhood has no ellipse or
+average snap target.
+
+### Robust ellipse and average target
+
+For accepted x'/y' points, use deterministic Fast-MCD. Set
+`h = max(2, ceil(n/2))` for n >= 2; use a numerical point ellipse for one
+sample and no ellipse for zero samples. Sort points lexicographically and
+generate at most 32 deterministic evenly distributed h-point seed subsets.
+Run at most five C-steps per seed, selecting the h smallest regularized
+Mahalanobis distances each step and stopping when the subset is unchanged.
+Choose the smallest covariance determinant, with lexicographic tie-breaking.
+
+Use the selected subset's unbiased covariance, a 1e-9 diagonal floor, and the
+95% two-dimensional chi-square factor. Draw the covariance eigenvectors as a
+rotated ellipse on the gamut slice; clip only at the viewport boundary.
+
+Separately average accepted samples in ACEScg. Convert that mean through the
+fixed HDR 1000 nits P3-D65 forward pair, divide by the fixed source scale, and
+solve canonical J'/x'/y'. The resulting average marker is independent of the
+selected presentation view, is drawn with a persistent dim ring, and is added
+to both x'/y' and J' snapping. The image result never automatically moves the
+picker; it only adds a visible snap target.
+
+The image panel, interpreted preview, crosshair, loupe, statistics, ellipse,
+and average marker persist after confirmation until replacement or reset.

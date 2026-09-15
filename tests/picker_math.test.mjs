@@ -7,8 +7,6 @@ import {
   ROLLING_BALL_MAX_ACCELERATION,
   PATCH_ENTRY_RADIUS,
   PATCH_SNAP_DISTANCE,
-  backgroundFromSlider,
-  backgroundSliderPosition,
   canvasPoint,
   patchCandidate,
   nearestSnapTarget,
@@ -17,6 +15,9 @@ import {
   rollingBallAcceleration,
   rollingBallVelocity,
   rollingWheelDelta,
+  neighborhoodPixels,
+  covarianceEllipse,
+  ellipsePoint,
   projectSnapCode,
   slicePoint,
   snapCartesianPoint,
@@ -114,6 +115,11 @@ test("J snap targets choose the nearest active patch or reference white", () => 
     nearestJSnapTarget(J_REFERENCE_WHITE + 0.004, J_REFERENCE_WHITE + 0.008),
     { kind: "patch", value: J_REFERENCE_WHITE + 0.008 },
   );
+  const averageJ = J_REFERENCE_WHITE + 0.002;
+  assert.deepEqual(nearestJSnapTarget(averageJ + 0.001, undefined, J_REFERENCE_WHITE, J_SNAP_DISTANCE, averageJ), {
+    kind: "average",
+    value: averageJ,
+  });
 });
 
 test("Cartesian snap preserves the real pointer and releases without hysteresis", () => {
@@ -198,15 +204,8 @@ test("a rolling-ball projection preserves the displayed J channel", () => {
   );
 });
 
-test("Background slider directly exposes normalized surround J'", () => {
+test("Background J' remains normalized", () => {
   assert.equal(BACKGROUND_MAX, 1);
-  assert.equal(backgroundFromSlider(1), 1);
-  for (const value of [0, 0.01, 0.15, 0.5, 1]) {
-    assert.ok(
-      Math.abs(backgroundFromSlider(backgroundSliderPosition(value)) - value) <
-        1e-12,
-    );
-  }
 });
 
 test("J wheel maps upward movement to increasing J", () => {
@@ -225,8 +224,8 @@ test("J wheel acceleration scales movement with the shared 1x..4x profile", () =
   assert.ok(Math.abs(accelerated - (0.3 + 0.25 * acceleration * 0.25)) < 1e-12);
 });
 
-test("reference-white J wheel position is physical 100 nits in the fixed scale", () => {
-  assert.ok(Math.abs(J_REFERENCE_WHITE - 76.02655940839014 / 217.2768649129496) < 1e-15);
+test("reference-white J wheel position is the fixed 203-nit ruler", () => {
+  assert.ok(Math.abs(J_REFERENCE_WHITE - 100 / 217.2768649129496) < 1e-15);
 });
 
 test("rolling-ball deltas use quarter-speed Cartesian movement", () => {
@@ -245,6 +244,42 @@ test("rolling-ball acceleration preserves slow precision and boosts fast motion"
   assert.ok(rollingBallAcceleration(0.1) < 1.2);
   assert.ok(rollingBallAcceleration(8) > 3.8);
   assert.ok(rollingBallAcceleration(100) <= ROLLING_BALL_MAX_ACCELERATION);
+});
+
+test("image neighborhoods use native pixel centers within the requested radius", () => {
+  assert.equal(neighborhoodPixels(3, 3, 9, 9, 0).length, 1);
+  assert.equal(neighborhoodPixels(3, 3, 9, 9, 3).length, 29);
+  assert.ok(neighborhoodPixels(0, 0, 9, 9, 3).every(([x, y]) => x >= 0 && y >= 0));
+});
+
+test("image statistics produce a rotated 95 percent covariance ellipse", () => {
+  const ellipse = covarianceEllipse([
+    { x: -1, y: -1 }, { x: 1, y: 1 }, { x: -0.5, y: -0.5 }, { x: 0.5, y: 0.5 },
+  ]);
+  assert.ok(ellipse);
+  assert.ok(Math.abs(ellipse.angle - Math.PI / 4) < 1e-12);
+  assert.ok(ellipse.major > ellipse.minor);
+  const p = ellipsePoint(ellipse, 0);
+  assert.ok(p.x > 0 && p.y > 0);
+});
+
+test("robust image ellipse resists a distant outlier deterministically", () => {
+  const clean = Array.from({ length: 10 }, (_, index) => ({
+    x: 0.4 + index * 0.001,
+    y: 0.6 + index * 0.001,
+  }));
+  const withOutlier = [...clean, { x: 0.95, y: 0.05 }];
+  const ellipse = covarianceEllipse(withOutlier);
+  assert.ok(ellipse);
+  assert.equal(ellipse.sampleCount, 11);
+  assert.equal(ellipse.subsetSize, 6);
+  assert.ok(ellipse.mean.x < 0.42 && ellipse.mean.y > 0.58);
+  assert.ok(ellipse.major < 0.02, `major axis unexpectedly expanded: ${ellipse.major}`);
+  assert.deepEqual(covarianceEllipse(withOutlier), ellipse);
+});
+
+test("image average is an additional nearest snap target", () => {
+  assert.equal(nearestSnapTarget(0.51, 0.5, [], { x: 0.5, y: 0.5 }, { x: 0.51, y: 0.5 })?.kind, "average");
 });
 
 test("rolling-ball velocity is smoothed from normalized pointer speed", () => {

@@ -29,6 +29,18 @@ test(
     await page.waitForFunction(
       () => document.querySelector("#plot-frame")?.dataset.colorcheckerRingCount === "18",
     );
+    assert.equal(await page.locator('[data-image-zoom="2"]').getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator('[data-image-zoom="1"]').getAttribute("aria-pressed"), "false");
+    assert.equal(await page.locator("body").evaluate(element => getComputedStyle(element).userSelect), "none");
+    assert.equal(await page.locator("#j-number").evaluate(element => getComputedStyle(element).userSelect), "text");
+    assert.equal(await page.locator("#plot-frame").getAttribute("data-indicator-patch-count"), "18");
+    assert.ok(await page.locator("#gamut-indicators").evaluate(canvas => {
+      const context = canvas.getContext("2d");
+      if (!context) return false;
+      const alpha = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let i = 3; i < alpha.length; i += 4) if (alpha[i] !== 0) return true;
+      return false;
+    }), "ColorChecker indicators are painted before any picker movement");
     const desktopLayout = await page.evaluate(() => {
       const wheel = document.querySelector("#j-wheel").getBoundingClientRect();
       const slice = document.querySelector("#plot-frame").getBoundingClientRect();
@@ -155,7 +167,7 @@ test(
       }),
       wheel: (() => { const r = document.querySelector("#j-wheel").getBoundingClientRect(); return [r.left, r.right, r.top, r.bottom]; })(),
       slice: (() => { const r = document.querySelector("#plot-frame").getBoundingClientRect(); return [r.left, r.right, r.top, r.bottom]; })(),
-      required: ["#gamut-slice", "#preview", "#linear-value", "#view-menu", "#j-wheel", "#background-brightness", ".app-footer"].every((selector) => !!document.querySelector(selector)),
+      required: ["#gamut-slice", "#preview", "#linear-value", "#view-menu", "#j-wheel", "#background-stick", ".app-footer"].every((selector) => !!document.querySelector(selector)),
       removed: ["#rolling-pad", "#rolling-ball"].every((selector) => !document.querySelector(selector)),
     }));
     assert.equal(metrics.dpr, 3);
@@ -222,7 +234,7 @@ async function settledImage(page) {
   await page.waitForFunction(() => {
     const frame = document.querySelector("#plot-frame");
     const imageCode = JSON.parse(document.querySelector("#preview").dataset.imageCode ?? "[]");
-    const background = Number(document.querySelector("#background-brightness-value").textContent);
+    const background = Number.parseFloat(document.querySelector("#background-stick").style.bottom) / 100;
     return imageCode.length === 4 && Math.abs(imageCode[0] - Number(frame.dataset.displayJ)) < 1e-6 && Math.abs(imageCode[1] - Number(frame.dataset.displayX)) < 1e-6 && Math.abs(imageCode[2] - Number(frame.dataset.displayY)) < 1e-6 && Math.abs(imageCode[3] - background) < 1e-3;
   });
 }
@@ -231,6 +243,9 @@ async function currentPng(page) {
 }
 async function currentSlicePng(page) {
   return readPng(await page.evaluate(async () => [...new Uint8Array(await (await fetch(document.querySelector("#gamut-slice").src)).arrayBuffer())]));
+}
+async function elementPng(page, selector) {
+  return readPng(await page.evaluate(async selector => [...new Uint8Array(await (await fetch(document.querySelector(selector).src)).arrayBuffer())], selector));
 }
 
 test("gamut viewport keeps fixed canvas layers around an RGBA slice PNG", { timeout: 60_000 }, async context => {
@@ -331,7 +346,7 @@ test("wheel, direct slice gestures, and canonical snap display/calculation stay 
   assert.equal(await page.locator("#rolling-value, .rolling-value").count(), 0);
   assert.equal(await page.locator(".j-wheel-ticks span").count(), 11);
   assert.deepEqual(await page.locator("#view-menu [data-view]").evaluateAll(buttons => buttons.map(b => [b.dataset.view, b.disabled])), [["1", false], ["4", false], ["2", false], ["0", false]]);
-  assert.equal(await page.locator("#background-brightness").getAttribute("max"), "1");
+  assert.equal(await page.locator("#background-stick").getAttribute("aria-hidden"), "true");
   const initialGeometry = await page.evaluate(() => {
     const rect = selector => {
       const value = document.querySelector(selector).getBoundingClientRect();
@@ -418,16 +433,15 @@ test("wheel, direct slice gestures, and canonical snap display/calculation stay 
   assert.equal(releasedJ.real, releasedJ.display);
 
   // Neutral foreground and its snapped surround must be the same PNG samples.
-  await setJ(page, .42);
+  // The preview drag controls Background J'.  Keep the foreground at the
+  // default surround here so the view-switch comparison remains neutral
+  // without relying on the removed range input.
+  await setJ(page, .15);
   await settledImage(page);
   for (const view of [1, 4, 2, 0]) {
     await chooseView(page, view);
-    const generation = await page.locator("#preview").getAttribute("data-image-generation");
-    await page.locator("#background-brightness").evaluate(range => {
-      range.value = String(Number.parseFloat(document.querySelector("#background-stick").style.left) / 100);
-      range.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await page.waitForFunction(g => document.querySelector("#preview").dataset.imageGeneration !== g, generation);
+    // Background J' is now controlled by vertical preview dragging.  The
+    // default surround remains intentionally independent of foreground J'.
     await settledImage(page);
     const png = await currentPng(page);
     assert.deepEqual(png.pixel(0, 0), png.pixel(128, 128));
@@ -445,6 +459,8 @@ test("wheel, direct slice gestures, and canonical snap display/calculation stay 
 
 test("J wheel is direct, persistent, clamped, and snaps through a separate real value", { timeout: 60_000 }, async context => {
   const { page, errors } = await openPicker(context);
+  assert.equal(await page.locator("#background-stick").evaluate(element => getComputedStyle(element).borderLeftColor), "rgb(255, 255, 255)");
+  assert.equal(await page.locator("#background-stick").evaluate(element => getComputedStyle(element, "::after").borderLeftColor), "rgb(23, 26, 32)");
   await pickXY(page, .5, .5);
   const wheel = page.locator("#j-wheel");
   const frame = page.locator("#plot-frame");
@@ -513,6 +529,11 @@ test("J wheel is direct, persistent, clamped, and snaps through a separate real 
   await page.setViewportSize({ width: 1280, height: 700 });
   const resizedBox = await wheel.boundingBox();
   assert.ok(resizedBox);
+  await page.waitForFunction(({ height, offset }) => {
+    const wheel = document.querySelector("#j-wheel");
+    const actualHeight = wheel.getBoundingClientRect().height;
+    return actualHeight > 0 && Math.abs(offset / height - Number(wheel.dataset.visualOffset) / actualHeight) < 1e-5;
+  }, beforeResize);
   assert.ok(Math.abs(beforeResize.offset / beforeResize.height - (await visualOffset()) / resizedBox.height) < 1e-5,
     "wheel position is reconstructed for the new wheel height");
   assert.deepEqual(errors, []);
@@ -551,6 +572,29 @@ test("preview retains decoded images, rejects stale work, and shows invalidity d
   await page.locator("#j-wheel").press("ArrowUp");
   await page.waitForFunction(() => document.querySelector("#preview-status").hidden);
 
+  // Background J' drags are admitted to the same live, coalesced preview
+  // pipeline, so rapid movement advances the PNG before release.
+  const preview = page.locator("#preview");
+  const previewBox = await preview.boundingBox();
+  assert.ok(previewBox);
+  const beforeBackground = await preview.getAttribute("data-image-generation");
+  await preview.dispatchEvent("pointerdown", {
+    pointerId: 701, pointerType: "touch", button: 0,
+    clientX: previewBox.x + previewBox.width / 2,
+    clientY: previewBox.y + previewBox.height / 2,
+  });
+  await preview.dispatchEvent("pointermove", {
+    pointerId: 701, pointerType: "touch", button: 0,
+    clientX: previewBox.x + previewBox.width / 2,
+    clientY: previewBox.y + previewBox.height * .35,
+  });
+  await page.waitForFunction(generation => document.querySelector("#preview").dataset.imageGeneration !== generation, beforeBackground);
+  await preview.dispatchEvent("pointerup", {
+    pointerId: 701, pointerType: "touch", button: 0,
+    clientX: previewBox.x + previewBox.width / 2,
+    clientY: previewBox.y + previewBox.height * .35,
+  });
+
   // A captured touch drag has not released, and PNG decode is deliberately slow.
   await page.evaluate(() => { window.__delayNextDecode = 400; });
   const frame = page.locator("#plot-frame"), box = await frame.boundingBox();
@@ -579,10 +623,9 @@ test("mobile view menu and controls stay visible at 360x645 DPR 3", { timeout: 6
   const { page, errors } = await openPicker(context, { viewport: { width: 360, height: 645 }, deviceScaleFactor: 3 });
   const geometry = await page.evaluate(() => {
     const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width }; };
-    return { slice: rect(".plot-frame"), preview: rect(".preview-panel"), label: rect(".background-control label"), background: rect("#background-brightness"), footer: rect(".app-footer"), wheel: rect("#j-wheel") };
+    return { slice: rect(".plot-frame"), preview: rect(".preview-panel"), background: rect("#background-stick"), footer: rect(".app-footer"), wheel: rect("#j-wheel") };
   });
   assert.ok(geometry.slice.bottom <= geometry.preview.top);
-  assert.ok(geometry.background.left >= geometry.label.right - 1);
   for (const [name, r] of Object.entries(geometry)) assert.ok(r.top >= 0 && r.bottom <= 645 && r.left >= 0 && r.right <= 360, `${name} visible: ${JSON.stringify(r)}`);
 
   const previewGeneration = await page.locator("#preview").getAttribute("data-image-generation");
@@ -648,5 +691,224 @@ test("touch and pen swipe the slice relatively without a contact jump", { timeou
     assert.equal(await frame.getAttribute("data-slice-tracking"), "idle");
   }
   assert.equal(await page.locator("#rolling-pad, #rolling-ball").count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test("image locator inspects PNG metadata, prepares manual input, and samples a sharp loupe", { timeout: 60_000 }, async context => {
+  const { page, errors } = await openPicker(context);
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+  await page.locator("#image-file-input").setInputFiles({ name: "sample.png", mimeType: "image/png", buffer: png });
+  assert.equal(await page.locator('[data-image-zoom="2"]').getAttribute("aria-pressed"), "true");
+  assert.equal(await page.locator("#image-panel").getAttribute("data-ready"), "false");
+  const hiddenDuringPreparation = await page.locator("#image-panel").evaluate(panel => {
+    const previous = panel.getAttribute("data-ready");
+    panel.setAttribute("data-ready", "false");
+    const hidden = getComputedStyle(panel.querySelector(".image-row")).display === "none";
+    if (previous === null) panel.removeAttribute("data-ready");
+    else panel.setAttribute("data-ready", previous);
+    return hidden;
+  });
+  assert.equal(hiddenDuringPreparation, true);
+  await page.waitForFunction(() => ["inspected", "true"].includes(document.querySelector("#image-panel")?.dataset.ready ?? ""));
+  await page.locator("#image-options").click();
+  assert.equal(await page.locator("#image-gamut-field").isVisible(), true);
+  assert.equal(await page.locator("#image-transfer-field").isVisible(), true);
+  assert.match(await page.locator("#image-interpretation-warning").textContent(), /No embedded color profile/);
+  await page.locator("#image-gamut").selectOption("Rec.709 / sRGB");
+  await page.locator("#image-transfer").selectOption("sRGB");
+  await page.locator("#image-options-close").click();
+  await page.waitForFunction(() => document.querySelector("#image-viewport")?.dataset.ready === "true");
+  assert.equal(await page.locator("#image-preview").evaluate(image => [image.naturalWidth, image.naturalHeight].join("×")), "1×1");
+  assert.deepEqual(await page.evaluate(() => ({
+    preview: document.querySelector("#image-preview")?.tagName,
+    loupe: document.querySelector("#image-loupe")?.tagName,
+    overlay: document.querySelector("#image-overlay")?.tagName,
+    overlaySpace: document.querySelector("#image-overlay")?.getContext("2d")?.getContextAttributes().colorSpace,
+    indicatorSpace: document.querySelector("#gamut-indicators")?.getContext("2d")?.getContextAttributes().colorSpace,
+  })), {
+    preview: "IMG", loupe: "IMG", overlay: "CANVAS",
+    overlaySpace: "display-p3", indicatorSpace: "display-p3",
+  });
+  const rangePresentation = await page.evaluate(() => ({
+    supported: CSS.supports("dynamic-range-limit", "no-limit"),
+    preview: getComputedStyle(document.querySelector("#image-preview")).getPropertyValue("dynamic-range-limit"),
+    loupe: getComputedStyle(document.querySelector("#image-loupe")).getPropertyValue("dynamic-range-limit"),
+  }));
+  if (rangePresentation.supported) assert.deepEqual(rangePresentation, { supported: true, preview: "no-limit", loupe: "no-limit" });
+  assert.equal(await page.locator("#image-overlay").evaluate(canvas => getComputedStyle(canvas).objectFit), "fill");
+  const viewport = await page.locator("#image-viewport").boundingBox();
+  assert.ok(viewport);
+  await page.locator("#image-viewport").dispatchEvent("pointerdown", {
+    pointerId: 401, pointerType: "mouse", button: 0,
+    clientX: viewport.x + viewport.width / 2,
+    clientY: viewport.y + viewport.height / 2,
+  });
+  await page.waitForFunction(() => document.querySelector("#image-stats")?.textContent?.includes("pixels sampled"));
+  assert.equal(await page.locator("#image-viewport").getAttribute("data-tracking"), "mouse-active");
+  assert.equal(await page.locator("#image-viewport").getAttribute("data-pointer-lock"), "active");
+  assert.equal(await page.locator("#image-loupe").evaluate(element => getComputedStyle(element).imageRendering), "pixelated");
+  assert.match(await page.locator("#image-loupe").getAttribute("src"), /^blob:/);
+  assert.match(await page.locator("#image-stats").textContent(), /1 pixels sampled/);
+  await page.evaluate(() => document.dispatchEvent(new PointerEvent("pointerdown", { pointerId: 402, pointerType: "mouse", button: 0, clientX: 0, clientY: 0 })));
+  await page.waitForFunction(() => document.querySelector("#image-viewport")?.dataset.tracking === "idle");
+  const locatorBeforeHdr = await page.locator("#image-preview").getAttribute("src");
+  const loupeBeforeHdr = await page.locator("#image-loupe").getAttribute("src");
+  await chooseView(page, 2);
+  await page.waitForFunction(({ locator, loupe }) => {
+    const panel = document.querySelector("#image-panel");
+    return panel?.dataset.transforming === "false" &&
+      document.querySelector("#image-preview")?.getAttribute("src") !== locator &&
+      document.querySelector("#image-loupe")?.getAttribute("src") !== loupe;
+  }, { locator: locatorBeforeHdr, loupe: loupeBeforeHdr });
+  assert.deepEqual(await page.evaluate(async urls => Promise.all(urls.map(async url => {
+    try { return (await fetch(url)).ok; } catch { return false; }
+  })), [locatorBeforeHdr, loupeBeforeHdr]), [false, false], "superseded direct-image blob URLs are revoked");
+  for (const selector of ["#image-preview", "#image-loupe"]) {
+    const encoded = await elementPng(page, selector);
+    assert.equal(encoded.depth, 16);
+    assert.deepEqual([...encoded.chunks.get("cICP")], [12, 16, 0, 1]);
+  }
+  assert.equal(await page.locator("#image-scale-203").isChecked(), true);
+  const analysisBeforeScale = await page.locator("#image-stats").textContent();
+  const previewBeforeScale = await page.locator("#image-preview").getAttribute("src");
+  await page.locator("#image-options").click();
+  const busyState = await page.locator("#image-scale-203").evaluate(input => {
+    input.checked = false;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    const panel = document.querySelector("#image-panel");
+    const banner = document.querySelector("#image-transform-banner");
+    return {
+      busy: panel?.dataset.transforming,
+      bannerHidden: banner?.hasAttribute("hidden"),
+      opacity: getComputedStyle(document.querySelector(".image-row")).opacity,
+    };
+  });
+  assert.deepEqual(busyState, { busy: "true", bannerHidden: false, opacity: "0.38" });
+  await page.waitForFunction(src => document.querySelector("#image-preview")?.getAttribute("src") !== src, previewBeforeScale);
+  assert.equal(await page.locator("#image-panel").getAttribute("data-transforming"), "false");
+  assert.equal(await page.locator("#image-transform-banner").isHidden(), true);
+  assert.match(await page.locator("#image-preview").getAttribute("data-renderer"), /^(webgpu|wasm)$/);
+  assert.equal(await page.locator("#image-stats").textContent(), analysisBeforeScale);
+  await page.locator("#image-options-close").click();
+  await page.locator('[data-image-zoom="2"]').click();
+  assert.equal(await page.locator('[data-image-zoom="2"]').getAttribute("aria-pressed"), "true");
+
+  // Replacing the image resets to 2x and keeps the row hidden until the new
+  // raster/crosshair state is initialized together.
+  await page.locator("#image-file-input").setInputFiles({ name: "sample-2.png", mimeType: "image/png", buffer: png });
+  assert.equal(await page.locator('[data-image-zoom="2"]').getAttribute("aria-pressed"), "true");
+  await page.waitForFunction(() => document.querySelector("#image-viewport")?.dataset.ready === "true");
+  const zoomWidth = await page.locator(".image-zoom-controls").evaluate(element => element.getBoundingClientRect().width);
+  const buttonWidths = await page.locator(".image-zoom-button").evaluateAll(buttons => buttons.reduce((sum, button) => sum + button.getBoundingClientRect().width, 0));
+  assert.ok(zoomWidth <= buttonWidths + 8, `zoom controls expanded to ${zoomWidth}px for ${buttonWidths}px of buttons`);
+  assert.ok(await page.locator("#image-overlay").evaluate(canvas => {
+    const context = canvas.getContext("2d");
+    if (!context) return false;
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let i = 3; i < pixels.length; i += 4) if (pixels[i] !== 0) return true;
+    return false;
+  }), "replacement image publishes with a crosshair");
+  assert.deepEqual(errors, []);
+});
+
+test("unchecked HDR P3 slice PNG accepts bright neighborhoods", { timeout: 60_000 }, async context => {
+  const { page, errors } = await openPicker(context);
+  await chooseView(page, 2);
+  await setJNumber(page, 0.8);
+  await page.waitForFunction(() => Math.abs(JSON.parse(document.querySelector("#gamut-slice")?.dataset.imageCode ?? "[NaN]")[0] - 0.8) < 1e-6);
+  const sliceBytes = await page.evaluate(async () => [...new Uint8Array(await (await fetch(document.querySelector("#gamut-slice").src)).arrayBuffer())]);
+  await page.locator("#image-file-input").setInputFiles({ name: "hdr-slice.png", mimeType: "image/png", buffer: Buffer.from(sliceBytes) });
+  await page.waitForFunction(() => document.querySelector("#image-viewport")?.dataset.ready === "true");
+  assert.equal(await page.locator("#image-scale-203").isChecked(), false);
+  await page.waitForFunction(() => document.querySelector("#image-stats")?.textContent?.includes("pixels sampled"));
+  const stats = await page.locator("#image-stats").textContent();
+  assert.match(stats ?? "", /29 pixels sampled/);
+  assert.doesNotMatch(stats ?? "", /29 unavailable/);
+  assert.deepEqual(errors, []);
+});
+
+test("WebGPU image appearance matches the official-table WASM path for every view and scale", { timeout: 60_000 }, async context => {
+  const server = await createServer({ server: { host: "127.0.0.1", port: 0 } });
+  await server.listen();
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address !== "string");
+  const browser = await chromium.launch({
+    executablePath: CHROMIUM,
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--enable-unsafe-webgpu", "--use-angle=swiftshader"],
+  });
+  context.after(async () => { await browser.close(); await server.close(); });
+  const page = await browser.newPage();
+  await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle" });
+  const parity = await page.evaluate(async () => {
+    const wasm = await import("/src/wasm/decomposition_pkg/modcam16_decomposition_wasm.js");
+    await wasm.default();
+    const { SliceWebGpuRenderer } = await import("/src/slice_webgpu.ts");
+    const renderer = new SliceWebGpuRenderer();
+    if (!renderer.available) return null;
+    const parameters = wasm.picker_gpu_parameters();
+    const source = new Float32Array([.18, .18, .18, .5, .1, .05, .02, .3, .7, 1.2, .8, .25]);
+    const results = [];
+    for (const view of [1, 4, 2, 0]) for (const scale203 of [false, true]) {
+      const slot = view === 0 ? 0 : view === 1 ? 1 : view === 2 ? 2 : 3;
+      const gpu = await renderer.renderImage(parameters, slot, scale203, source);
+      const cpu = wasm.image_picker_display_rgb_ap0_batch(source, view, scale203);
+      let maximum = 0;
+      for (let index = 0; index < cpu.length; index += 1)
+        maximum = Math.max(maximum, Math.abs(gpu[index] - cpu[index]));
+      results.push({ view, scale203, maximum, length: gpu.length });
+    }
+    return results;
+  });
+  if (parity === null) return;
+  assert.equal(parity.length, 8);
+  for (const result of parity) {
+    assert.equal(result.length, 12);
+    assert.ok(result.maximum < .002, JSON.stringify(result));
+  }
+});
+
+test("image appearance falls back to the bounded WASM worker pool without WebGPU", { timeout: 60_000 }, async context => {
+  const server = await createServer({ server: { host: "127.0.0.1", port: 0 } });
+  await server.listen();
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address !== "string");
+  const browser = await chromium.launch({
+    executablePath: CHROMIUM, headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-webgpu"],
+  });
+  context.after(async () => { await browser.close(); await server.close(); });
+  const page = await browser.newPage();
+  await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle" });
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+  await page.locator("#image-file-input").setInputFiles({ name: "cpu.png", mimeType: "image/png", buffer: png });
+  await page.waitForFunction(() => document.querySelector("#image-viewport")?.dataset.ready === "true");
+  assert.equal(await page.locator("#image-preview").getAttribute("data-renderer"), "wasm");
+});
+
+test("loaded image locator still fits the 360x645 DPR-3 viewport", { timeout: 60_000 }, async context => {
+  const { page, errors } = await openPicker(context, { viewport: { width: 360, height: 645 }, deviceScaleFactor: 3 });
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+  await page.locator("#image-file-input").setInputFiles({ name: "mobile.png", mimeType: "image/png", buffer: png });
+  await page.waitForFunction(() => ["inspected", "true"].includes(document.querySelector("#image-panel")?.dataset.ready ?? ""));
+  await page.locator("#image-options").click();
+  await page.locator("#image-gamut").selectOption("Rec.709 / sRGB");
+  await page.locator("#image-options-close").click();
+  await page.waitForFunction(() => document.querySelector("#image-viewport")?.dataset.ready === "true");
+  const layout = await page.evaluate(() => {
+    const selectors = [".app-shell", ".visuals", "#image-panel", "#image-viewport", ".app-footer"];
+    return {
+      scroll: [document.documentElement.scrollWidth, document.documentElement.scrollHeight],
+      viewport: [innerWidth, innerHeight],
+      bounds: selectors.map(selector => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return [rect.left, rect.top, rect.right, rect.bottom];
+      }),
+    };
+  });
+  assert.deepEqual(layout.scroll, layout.viewport);
+  for (const [left, top, right, bottom] of layout.bounds) {
+    assert.ok(left >= 0 && top >= 0 && right <= 360 && bottom <= 645, JSON.stringify(layout));
+  }
   assert.deepEqual(errors, []);
 });
