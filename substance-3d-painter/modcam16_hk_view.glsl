@@ -1,9 +1,9 @@
 /*
-UNLIT modCAM16-HK: (J',x',y') BASE COLOR + EMISSIVE + CAT16 + ACES 2.0 HDR P3
+UNLIT modCAM16-HK: (J',x',y') BASE COLOR + EMISSIVE + CAT16 + ACES 2.0 HDR Rec.2020
 
 Base Color and Emissive are raw data channels. RGB is encoded as
 (J', rotated-fitted-radius-x', rotated-fitted-radius-y'): J' maps linearly to
-J_HK using the fixed HDR-P3 peak anchor documented in
+J_HK using the fixed 1000-nit peak anchor documented in
 MODCAM16_HK_FINAL_BEHAVIOR.md; the two saturation components are a
 logarithmic-radius Cartesian vector around 0.5, with
 (x',y')=(-R(s)sin(h), R(s)cos(h)).
@@ -44,7 +44,7 @@ const ivec2 ACES_TABLE_SIZE = ivec2(363, 12);
 const float PI = 3.14159265358979323846;
 const float J_HK_PEAK = 217.2768649129496;
 // The appearance reference white is 203 nits, whose modCAM16-HK lightness is
-// 100. The normalized J' channel uses this fixed HDR-P3 peak anchor.
+// 100. The normalized J' channel uses this fixed 1000-nit peak anchor.
 const float J_REFERENCE = 100.0;
 const float J_REFERENCE_CODE = J_REFERENCE / J_HK_PEAK;
 const float J_CODE_SCALE = J_HK_PEAK;
@@ -82,25 +82,17 @@ const mat3 AP0_TO_ACESCG = mat3(
     vec3(1.451439316145665, -0.076553773396020, 0.008316148425698),
     vec3(-0.236510746893740, 1.176229699833573, -0.006032449791021),
     vec3(-0.214928569251925, -0.099675926437552, 0.997716301365323));
-const mat3 P3_TO_XYZ = mat3(
-    vec3(0.486570948648216, 0.265667693169093, 0.198217285234362),
-    vec3(0.228974564069749, 0.691738521836506, 0.079286914093746),
-    vec3(0.000000000000000, 0.045113381858903, 1.043944368900976));
-const mat3 XYZ_TO_P3 = mat3(
-    vec3(2.493496911941425, -0.829488969561575, 0.035845830243784),
-    vec3(-0.931383617919124, 1.762664060318346, -0.076172389268041),
-    vec3(-0.402710784450717, 0.023624685841944, 0.956884524007687));
-const mat3 JMH_TO_RGB_P3 = mat3(
-    vec3(5.86586046, -1.17879069, 0.0301606283),
-    vec3(-4.48821688, 2.81135988, -0.16902554),
-    vec3(-0.117723338, -0.372647762, 1.39878595));
+const mat3 XYZ_TO_REC2020 = mat3(
+    vec3(1.716651187971268, -0.666684351832489, 0.017639857445311),
+    vec3(-0.355670783776393, 1.616481236634939, -0.042770613257809),
+    vec3(-0.253366281373660, 0.015768545813911, 0.942103121235474));
 const mat3 AP0_TO_LMS = mat3(
     vec3(0.445181042, 0.123734146, 0.0117007261),
     vec3(0.34964928, 0.613643706, 0.0280607939),
     vec3(-0.00112973212, 0.0563228019, 0.753939033));
 
 struct Profile {
-    mat3 xyz_to_rgb; mat3 rgb_to_lms; mat3 jmh_to_rgb;
+    mat3 xyz_to_rgb; mat3 rgb_to_lms;
     float j_max; float input_max; float output_max; float focus_j;
     float slope_gain; float gamma_bottom_inv; float tone_y_max;
     float tone_y_scale; float tone_y_ref;
@@ -110,9 +102,8 @@ struct Profile {
 
 Profile profileParams() {
     Profile p;
-    p.xyz_to_rgb = XYZ_TO_P3;
-    p.rgb_to_lms = mat3(vec3(0.252340943,0.106794775,0.00746381795), vec3(0.410706788,0.535307527,0.0558294654), vec3(0.13065286,0.15159817,0.730407238));
-    p.jmh_to_rgb = JMH_TO_RGB_P3;
+    p.xyz_to_rgb = XYZ_TO_REC2020;
+    p.rgb_to_lms = mat3(vec3(0.312590361,0.108960696,0.0084437551), vec3(0.368067265,0.542771041,0.0436396375), vec3(0.113042921,0.141968831,0.741617143));
     p.j_max = 283.249878; p.input_max = 10.0; p.output_max = 4096.0;
     p.focus_j = 40.816883; p.slope_gain = 1051.56519;
     p.gamma_bottom_inv = 0.826446235;
@@ -123,7 +114,7 @@ Profile profileParams() {
     p.mnorm_sin = vec3(36.4351311377,-15.8324405851,22.8424791064);
     p.mnorm_offset = 191.634288193;
     p.toe_first = 10.3199997; p.toe_second = 0.402999997; p.toe_k2 = 0.000500000024;
-    p.table_set = 1;
+    p.table_set = 0;
     return p;
 }
 

@@ -28,7 +28,7 @@ from generate_whitepoint_lut import (
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CONFIG = HERE / "cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio"
-PROFILE = "ACES 2.0 - HDR 1000 nits (P3 D65)"
+PROFILE = "ACES 2.0 - HDR 1000 nits (Rec.2020)"
 AP0_TO_ACESCG = np.array(
     [
         [1.4514393161456653, -0.23651074689374019, -0.21492856925192524],

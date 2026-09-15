@@ -29,10 +29,10 @@ Base Color and Emissive encode
 
 `R(s) = log1p(s / 6.900502700352508) / log1p(160 / 6.900502700352508)`.
 
-The fixed HDR-P3 authoring scale is
+The normalized 1000-nit scale is
 `J_HK = J' * 217.2768649129496`; the 203-nit reference white is
 `J' = 0.4602422813863053`. The shader applies CAT16 white adaptation and the
-ACES 2.0 HDR 1000-nit P3-D65 inverse to produce scene-linear ACEScg.
+ACES 2.0 HDR 1000-nit Rec.2020 inverse to produce scene-linear ACEScg.
 
 Out-of-range or non-finite resources fail closed with the shader's diagnostic
 colors. A valid zero `J'` remains black.
