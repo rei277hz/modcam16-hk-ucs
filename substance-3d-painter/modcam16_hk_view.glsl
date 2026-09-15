@@ -2,9 +2,9 @@
 UNLIT modCAM16-HK: (J',x',y') BASE COLOR + EMISSIVE + CAT16 + ACES 2.0 HDR Rec.2020
 
 Base Color and Emissive are raw data channels. RGB is encoded as
-(J', rotated-fitted-radius-x', rotated-fitted-radius-y'): J' maps linearly to
+(J', rotated-log-radius-x', rotated-log-radius-y'): J' maps linearly to
 J_HK using the fixed 1000-nit peak anchor documented in
-MODCAM16_HK_FINAL_BEHAVIOR.md; the two saturation components are a
+MODCAM16_HK_FINAL_BEHAVIOR.md; the two saturation components use a
 logarithmic-radius Cartesian vector around 0.5, with
 (x',y')=(-R(s)sin(h), R(s)cos(h)).
 Only User0 is consumed: RG selects the D65-centered white-balance LUT and B is
@@ -54,8 +54,10 @@ const float HK_NC = 0.8;
 const float HK_Z = 1.796227766016838;
 const float HK_AW = 31.7941491565276;
 const float HK_FL = 0.46646834500532247;
-const float HK_RADIUS_K = 6.900502700352508;
-const float HK_RADIUS_D = 3.185803578575629;
+// Calculated to contain the Rec.2020 pure-blue endpoint s_max=203.64174424420062
+// while providing smooth linear interpolation. Encoding is R(s)=ln(1+s/K)/D.
+const float HK_RADIUS_K = 5.977038579617132;
+const float HK_RADIUS_D = 3.557365336640551;
 
 const mat3 CAT16 = mat3(
     vec3(0.401288, -0.250268, -0.002079),

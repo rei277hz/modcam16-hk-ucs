@@ -25,14 +25,20 @@ import either file as a `Color LUT`.
 ## Behavior
 
 Base Color and Emissive encode
-`(J', -R(s) sin(h), R(s) cos(h))` around 0.5. The logarithmic radius is
-
-`R(s) = log1p(s / 6.900502700352508) / log1p(160 / 6.900502700352508)`.
+`(J', -R(s) sin(h), R(s) cos(h))` around 0.5.
 
 The normalized 1000-nit scale is
 `J_HK = J' * 217.2768649129496`; the 203-nit reference white is
-`J' = 0.4602422813863053`. The shader applies CAT16 white adaptation and the
-ACES 2.0 HDR 1000-nit Rec.2020 inverse to produce scene-linear ACEScg.
+`J' = 0.4602422813863053`. The deployed logarithmic radius is calculated to
+contain the Rec.2020-derived `s_max = 203.64174424420062` while preserving
+smooth linear interpolation:
+
+`R(s) = log1p(s / 5.977038579617132) / 3.557365336640551`.
+
+The inverse shader decode is
+`s = 5.977038579617132 * expm1(3.557365336640551 * R)`.
+The shader applies CAT16 white adaptation and the ACES 2.0 HDR 1000-nit
+Rec.2020 inverse to produce scene-linear ACEScg.
 
 Out-of-range or non-finite resources fail closed with the shader's diagnostic
 colors. A valid zero `J'` remains black.
