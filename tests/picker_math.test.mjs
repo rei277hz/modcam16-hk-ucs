@@ -2,19 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   BACKGROUND_MAX,
+  BACKGROUND_J_SNAP_DISTANCE,
   J_REFERENCE_WHITE,
   J_SNAP_DISTANCE,
-  ROLLING_BALL_MAX_ACCELERATION,
+  TRACK_MAX_ACCELERATION,
   PATCH_ENTRY_RADIUS,
   PATCH_SNAP_DISTANCE,
   canvasPoint,
   patchCandidate,
   nearestSnapTarget,
   nearestJSnapTarget,
-  rollingBallDelta,
-  rollingBallAcceleration,
-  rollingBallVelocity,
-  rollingWheelDelta,
+  nearestBackgroundJSnapTarget,
+  trackpadDelta,
+  trackMotionAcceleration,
+  trackMotionVelocity,
+  trackwheelDelta,
   neighborhoodPixels,
   covarianceEllipse,
   ellipsePoint,
@@ -122,6 +124,26 @@ test("J snap targets choose the nearest active patch or reference white", () => 
   });
 });
 
+test("Background J snap targets choose foreground first on ties or reference white", () => {
+  const foregroundJ = J_REFERENCE_WHITE + 0.008;
+  assert.deepEqual(
+    nearestBackgroundJSnapTarget(J_REFERENCE_WHITE + 0.004, foregroundJ),
+    { kind: "foreground", value: foregroundJ },
+  );
+  assert.deepEqual(
+    nearestBackgroundJSnapTarget(J_REFERENCE_WHITE - 0.006, 0.2),
+    { kind: "reference", value: J_REFERENCE_WHITE },
+  );
+  assert.deepEqual(
+    nearestBackgroundJSnapTarget(0.2 + BACKGROUND_J_SNAP_DISTANCE - 1e-12, 0.2),
+    { kind: "foreground", value: 0.2 },
+  );
+  assert.equal(
+    nearestBackgroundJSnapTarget(0.2 + BACKGROUND_J_SNAP_DISTANCE + 1e-6, 0.2, 0.5),
+    null,
+  );
+});
+
 test("Cartesian snap preserves the real pointer and releases without hysteresis", () => {
   assert.deepEqual(snapCartesianPoint(0.502, 0.503, 0.5, 0.5), {
     x: 0.5,
@@ -148,6 +170,18 @@ test("neutral targets omit patch J while reference-white J remains available", (
   assert.equal(
     projectSnapCode({ j: J_REFERENCE_WHITE + 0.004, x: 0.502, y: 0.503 }, target).j,
     J_REFERENCE_WHITE,
+  );
+  assert.equal(
+    projectSnapCode(
+      { j: J_REFERENCE_WHITE + 0.004, x: 0.502, y: 0.503 },
+      target,
+      undefined,
+      "j",
+      { j: 0.2, x: 0.5, y: 0.5 },
+      undefined,
+      false,
+    ).j,
+    J_REFERENCE_WHITE + 0.004,
   );
 });
 
@@ -189,7 +223,7 @@ test("ColorChecker J snapping remains independent from vector snapping", () => {
   );
 });
 
-test("a rolling-ball projection preserves the displayed J channel", () => {
+test("a color-trackpad projection preserves the displayed J channel", () => {
   const target = nearestSnapTarget(0.522, 0.503, [{ x: 0.52, y: 0.5 }]);
   assert.equal(target?.kind, "patch");
   assert.deepEqual(
@@ -208,42 +242,42 @@ test("Background J' remains normalized", () => {
   assert.equal(BACKGROUND_MAX, 1);
 });
 
-test("J wheel maps upward movement to increasing J", () => {
-  assert.equal(rollingWheelDelta(0.5, -100, 400), 0.5625);
-  assert.equal(rollingWheelDelta(0.5, 100, 400), 0.4375);
-  assert.equal(rollingWheelDelta(0.02, 1000, 400), 0);
-  assert.equal(rollingWheelDelta(0.98, -1000, 400), 1);
+test("J trackwheel maps upward movement to increasing J", () => {
+  assert.equal(trackwheelDelta(0.5, -100, 400), 0.5625);
+  assert.equal(trackwheelDelta(0.5, 100, 400), 0.4375);
+  assert.equal(trackwheelDelta(0.02, 1000, 400), 0);
+  assert.equal(trackwheelDelta(0.98, -1000, 400), 1);
 });
 
-test("J wheel acceleration scales movement with the shared 1x..4x profile", () => {
-  const acceleration = rollingBallAcceleration(2.5);
-  const base = rollingWheelDelta(0.3, -100, 400);
-  const accelerated = rollingWheelDelta(0.3, -100, 400, undefined, acceleration);
+test("J trackwheel acceleration scales movement with the shared 1x..4x profile", () => {
+  const acceleration = trackMotionAcceleration(2.5);
+  const base = trackwheelDelta(0.3, -100, 400);
+  const accelerated = trackwheelDelta(0.3, -100, 400, undefined, acceleration);
   assert.ok(acceleration > 2 && acceleration < 3);
   assert.ok(accelerated > base);
   assert.ok(Math.abs(accelerated - (0.3 + 0.25 * acceleration * 0.25)) < 1e-12);
 });
 
-test("reference-white J wheel position is the fixed 203-nit ruler", () => {
+test("reference-white J trackwheel position is the fixed 203-nit ruler", () => {
   assert.ok(Math.abs(J_REFERENCE_WHITE - 100 / 217.2768649129496) < 1e-15);
 });
 
-test("rolling-ball deltas use quarter-speed Cartesian movement", () => {
-  assert.deepEqual(rollingBallDelta(0.38, 0.65, 100, -100, 400, 400), {
+test("color-trackpad deltas use quarter-speed Cartesian movement", () => {
+  assert.deepEqual(trackpadDelta(0.38, 0.65, 100, -100, 400, 400), {
     x: 0.4425,
     y: 0.7125,
   });
-  assert.deepEqual(rollingBallDelta(0.01, 0.99, -1000, 1000, 400, 400), {
+  assert.deepEqual(trackpadDelta(0.01, 0.99, -1000, 1000, 400, 400), {
     x: 0,
     y: 0.365,
   });
 });
 
-test("rolling-ball acceleration preserves slow precision and boosts fast motion", () => {
-  assert.equal(rollingBallAcceleration(0), 1);
-  assert.ok(rollingBallAcceleration(0.1) < 1.2);
-  assert.ok(rollingBallAcceleration(8) > 3.8);
-  assert.ok(rollingBallAcceleration(100) <= ROLLING_BALL_MAX_ACCELERATION);
+test("color-trackpad acceleration preserves slow precision and boosts fast motion", () => {
+  assert.equal(trackMotionAcceleration(0), 1);
+  assert.ok(trackMotionAcceleration(0.1) < 1.2);
+  assert.ok(trackMotionAcceleration(8) > 3.8);
+  assert.ok(trackMotionAcceleration(100) <= TRACK_MAX_ACCELERATION);
 });
 
 test("image neighborhoods use native pixel centers within the requested radius", () => {
@@ -282,9 +316,9 @@ test("image average is an additional nearest snap target", () => {
   assert.equal(nearestSnapTarget(0.51, 0.5, [], { x: 0.5, y: 0.5 }, { x: 0.51, y: 0.5 })?.kind, "average");
 });
 
-test("rolling-ball velocity is smoothed from normalized pointer speed", () => {
-  const slow = rollingBallVelocity({ x: 0, y: 0 }, 4, 0, 400, 400, 40);
-  const fast = rollingBallVelocity({ x: 0, y: 0 }, 80, 0, 400, 400, 40);
+test("color-trackpad velocity is smoothed from normalized pointer speed", () => {
+  const slow = trackMotionVelocity({ x: 0, y: 0 }, 4, 0, 400, 400, 40);
+  const fast = trackMotionVelocity({ x: 0, y: 0 }, 80, 0, 400, 400, 40);
   assert.ok(fast.x > slow.x);
   assert.equal(slow.y, 0);
 });

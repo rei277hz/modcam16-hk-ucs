@@ -36,13 +36,8 @@ def xy_to_uv(xy: np.ndarray) -> np.ndarray:
 
 
 D65_WHITE_UV = xy_to_uv(D65_WHITE_XY)
-WHITE_XY = D65_WHITE_XY
-WHITE_XYZ = D65_WHITE_XYZ
-WHITE_UV = D65_WHITE_UV
-# Backward-compatible aliases used by the reference test helpers.
-AP1_WHITE_XY = D65_WHITE_XY
-AP1_WHITE_XYZ = D65_WHITE_XYZ
-AP1_WHITE_UV = D65_WHITE_UV
+# This D65 white is the LUT's display/source anchor; it is not the ACEScg/AP1
+# encoding white, which is approximately D60.
 
 
 def uv_to_xyz(uv: np.ndarray) -> np.ndarray:
@@ -127,7 +122,7 @@ def reference_coordinates() -> tuple[float, float]:
     offset = float(np.dot(D65_WHITE_UV - locus, normal))
     residual = float(np.linalg.norm(locus + offset * normal - D65_WHITE_UV))
     if residual > 2.0e-10:
-        raise RuntimeError(f"AP1 anchor residual is too large: {residual}")
+        raise RuntimeError(f"D65 anchor residual is too large: {residual}")
     return temperature, offset
 
 
@@ -304,8 +299,8 @@ def write_manifest(path: Path, lut_path: Path, lut: np.ndarray, metadata: dict[s
         "orientation_reason": "A higher red paint value conventionally reads as warmer, and the green axis is explicitly reversed so higher G reads as greener and lower G as more magenta.",
         "coordinate_mapping": "spectral Planck integration, fixed-Duv CIE 1960 uv arc length, common symmetric span",
         "adaptation": "CAT16 from selected display D65 white to the LUT target white, applied before each ACES inverse",
-        "reference_white_xy": AP1_WHITE_XY.tolist(), "reference_white_uv": AP1_WHITE_UV.tolist(),
-        "reference_white_XYZ_Y1": AP1_WHITE_XYZ.tolist(),
+        "reference_white_xy": D65_WHITE_XY.tolist(), "reference_white_uv": D65_WHITE_UV.tolist(),
+        "reference_white_XYZ_Y1": D65_WHITE_XYZ.tolist(),
         "center_payload": lut[lut.shape[0] // 2, lut.shape[1] // 2].tolist(),
         "metadata": metadata,
         "sha256": {lut_path.name: hashlib.sha256(lut_path.read_bytes()).hexdigest()},

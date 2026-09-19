@@ -95,8 +95,8 @@ const D50_WHITE: [f32; 3] = [0.96422, 1.0, 0.82521];
 #[cfg(test)]
 const D65_WHITE: [f32; 3] = [0.9504559, 1.0, 1.0890578];
 // Inverse of the ACES AP0 (D60) to CIE XYZ D65 BFD matrix from the bundled
-// OCIO configuration.  Keeping the D65 adaptation in this matrix means DNG
-// and ordinary D65 RGB sources share the same AP0 scene-reference contract.
+// OCIO configuration. This serves the private AP0 solver adapter; DNG
+// preparation ends directly in XYZ-D65.
 const XYZ_D65_TO_AP0: [[f32; 3]; 3] = [
     [1.0634955, 0.00640891, -0.01580679],
     [-0.49207413, 1.3682234, 0.09133709],
@@ -155,13 +155,13 @@ pub struct DngTransformDiagnostics {
     pub normalized_sample_range: [f32; 2],
     pub demosaiced_rgb_range: [[f32; 3]; 2],
     pub post_vignette_rgb_range: [[f32; 3]; 2],
-    pub final_ap0_range: [[f32; 3]; 2],
+    pub final_xyz_d65_range: [[f32; 3]; 2],
     pub representative_camera_rgb: [[f32; 3]; 3],
-    pub representative_ap0: [[f32; 3]; 3],
+    pub representative_xyz_d65: [[f32; 3]; 3],
     pub camera_to_xyz_d50: [[f32; 3]; 3],
     pub cat02_d50_to_d65: [[f32; 3]; 3],
     pub camera_to_d65: [[f32; 3]; 3],
-    pub camera_to_ap0: [[f32; 3]; 3],
+    pub camera_to_xyz_d65: [[f32; 3]; 3],
     pub white_balance_integrated: bool,
 }
 
@@ -1464,11 +1464,10 @@ fn parse_dng(data: &[u8]) -> Result<Pixels, String> {
         no_forward_camera_to_xyz
     }
     .ok_or("DNG camera calibration is singular or invalid.")?;
-    // The DNG camera-to-XYZ result is D50. A D50→D65 CAT02 step then feeds
-    // the ACES AP0 (D60) conversion, whose BFD adaptation is included in
-    // `XYZ_D65_TO_AP0`.
+    // The DNG camera-to-XYZ result is D50. A D50→D65 CAT02 step is the final
+    // prepared-image color boundary; the inverse ACES output transform
+    // consumes display-referred XYZ-D65 directly.
     let camera_to_d65 = mat_mul(D50_TO_D65_CAT02, camera_to_xyz_d50);
-    let camera_to_ap0 = mat_mul(XYZ_D65_TO_AP0, camera_to_d65);
     let representative_indices = [0, rgb.len() / 2, rgb.len().saturating_sub(1)];
     let representative_camera_rgb = representative_indices.map(|index| rgb[index]);
     // BaselineExposure is an image-level offset; BaselineExposureOffset is
@@ -1482,9 +1481,9 @@ fn parse_dng(data: &[u8]) -> Result<Pixels, String> {
     // camera samples twice and produces the characteristic magenta cast seen
     // in the iPhone DNG preview. Keep the camera samples in their native
     // coordinates for this integrated ColorMatrix transform.
-    apply_dng_camera_transform(&mut rgb, camera_to_ap0, exposure);
-    let final_ap0_range = rgb_range(&rgb);
-    let representative_ap0 = representative_indices.map(|index| rgb[index]);
+    apply_dng_camera_transform(&mut rgb, camera_to_d65, exposure);
+    let final_xyz_d65_range = rgb_range(&rgb);
+    let representative_xyz_d65 = representative_indices.map(|index| rgb[index]);
     let dng_transform = DngTransformDiagnostics {
         color_matrix_first_weight: matrix_weight,
         forward_matrix_used,
@@ -1495,13 +1494,13 @@ fn parse_dng(data: &[u8]) -> Result<Pixels, String> {
         normalized_sample_range,
         demosaiced_rgb_range,
         post_vignette_rgb_range,
-        final_ap0_range,
+        final_xyz_d65_range,
         representative_camera_rgb,
-        representative_ap0,
+        representative_xyz_d65,
         camera_to_xyz_d50,
         cat02_d50_to_d65: D50_TO_D65_CAT02,
         camera_to_d65,
-        camera_to_ap0,
+        camera_to_xyz_d65: camera_to_d65,
         white_balance_integrated: true,
     };
     if matches!(orientation, 5 | 6 | 7 | 8) {
@@ -1530,7 +1529,7 @@ fn parse_dng(data: &[u8]) -> Result<Pixels, String> {
             format: "dng".into(),
             width: width_out as u32,
             height: height_out as u32,
-            gamut: Some("ACES2065-1/AP0".into()),
+            gamut: Some("CIE XYZ-D65".into()),
             transfer: Some("Linear".into()),
             metadata_source: Some(metadata_source),
             automatic_icc: false,
@@ -1687,9 +1686,13 @@ fn bradford_adaptation(source_white: [f32; 3], target_white: [f32; 3]) -> Option
     ))
 }
 
-fn apply_dng_camera_transform(rgb: &mut [[f32; 3]], camera_to_ap0: [[f32; 3]; 3], exposure: f32) {
+fn apply_dng_camera_transform(
+    rgb: &mut [[f32; 3]],
+    camera_to_xyz_d65: [[f32; 3]; 3],
+    exposure: f32,
+) {
     for px in rgb {
-        *px = mat(camera_to_ap0, *px).map(|value| value * exposure);
+        *px = mat(camera_to_xyz_d65, *px).map(|value| value * exposure);
     }
 }
 
@@ -1739,7 +1742,7 @@ fn is_usable_icc_profile(data: &[u8]) -> bool {
         )
         .is_ok()
 }
-fn icc_rgb_to_ap0(rgb: &mut [[f32; 3]], icc: &[u8]) -> Result<(), String> {
+fn icc_rgb_to_xyz_d65(rgb: &mut [[f32; 3]], icc: &[u8]) -> Result<(), String> {
     let profile = icc_profile::Profile::new(icc).map_err(|e| e.to_string())?;
     if profile.color_space() != icc_profile::ColorSpace::Rgb {
         return Err("Embedded ICC profile must be RGB.".into());
@@ -1767,12 +1770,14 @@ fn icc_rgb_to_ap0(rgb: &mut [[f32; 3]], icc: &[u8]) -> Result<(), String> {
         transform
             .transform_f32(&normalized, &mut xyz)
             .map_err(|e| e.to_string())?;
-        let d65 = mat(D50_TO_D65_CAT02, xyz);
-        *px = mat(XYZ_D65_TO_AP0, d65);
+        // ICC RGB profiles expose XYZ PCS values relative to D50.  Adapt
+        // those values to D65 and keep XYZ-D65 as the prepared boundary;
+        // display-referred data must not be reinterpreted as ACES AP0.
+        *px = mat(D50_TO_D65_CAT02, xyz);
     }
     Ok(())
 }
-fn prepare_rgb(
+fn prepare_display_rgb_to_xyz_d65(
     mut rgb: Vec<[f32; 3]>,
     width: usize,
     height: usize,
@@ -1790,20 +1795,26 @@ fn prepare_rgb(
         }
     };
     if let Some((gamut, transfer)) = manual {
+        if matches!(gamut, "ACEScg" | "ACES2065-1") {
+            return Err("ACEScg and ACES2065-1 are scene-reference EXR formats, not display-referred RGB primaries.".into());
+        }
         for px in &mut rgb {
             for c in px.iter_mut() {
                 *c = decode_transfer(*c, transfer);
             }
-            *px = source_to_ap0(*px, gamut);
+            *px = source_to_xyz_d65(*px, gamut);
         }
     } else if let Some(icc) = icc_profile {
-        icc_rgb_to_ap0(&mut rgb, icc)?;
+        icc_rgb_to_xyz_d65(&mut rgb, icc)?;
     } else if let Some((gamut, transfer)) = embedded_pair {
+        if matches!(gamut, "ACEScg" | "ACES2065-1") {
+            return Err("ACEScg and ACES2065-1 must use the scene-reference EXR path.".into());
+        }
         for px in &mut rgb {
             for c in px.iter_mut() {
                 *c = decode_transfer(*c, transfer);
             }
-            *px = source_to_ap0(*px, gamut);
+            *px = source_to_xyz_d65(*px, gamut);
         }
     } else {
         return Err(
@@ -1926,15 +1937,86 @@ fn source_to_ap0(rgb: [f32; 3], gamut: &str) -> [f32; 3] {
     if gamut == "ACES2065-1" {
         return rgb;
     }
-    let xyz = match gamut {
+    if gamut == "ACEScg" {
+        // ACEScg is already AP1/D60 scene reference. Convert it directly to
+        // AP0; do not reinterpret AP0 as XYZ-D65 and convert it again.
+        return mat(AP1_TO_AP0, rgb);
+    }
+    [f32::NAN; 3]
+}
+
+/// Convert a display-referred RGB source to the canonical XYZ-D65 boundary
+/// consumed by the inverse ACES output transform.  ACEScg/AP0 are deliberately
+/// excluded here: those are scene-reference formats and use `source_to_ap0`
+/// only on the explicit scene-reference EXR path.
+fn source_to_xyz_d65(rgb: [f32; 3], gamut: &str) -> [f32; 3] {
+    match gamut {
         "Rec.709 / sRGB" => mat(SRGB_TO_XYZ, rgb),
         "Display P3 / P3-D65" => mat(P3_TO_XYZ, rgb),
         "Rec.2020" => mat(REC2020_TO_XYZ, rgb),
         "Adobe RGB" => mat(ADOBE_RGB_TO_XYZ, rgb),
-        "ACEScg" => mat(AP1_TO_AP0, rgb),
         _ => [f32::NAN; 3],
+    }
+}
+
+fn prepare_scene_reference_exr(
+    mut rgb: Vec<[f32; 3]>,
+    width: usize,
+    height: usize,
+    req: &Request,
+    embedded_pair: Option<(&str, &str)>,
+) -> Result<Vec<[f32; 3]>, String> {
+    let (gamut, transfer) = match (&req.gamut, &req.transfer) {
+        (Some(gamut), Some(transfer)) => (gamut.as_str(), transfer.as_str()),
+        (None, None) => embedded_pair
+            .ok_or("Select ACEScg or ACES2065-1 and Linear for this scene-reference EXR.")?,
+        _ => {
+            return Err(
+                "Source gamut and transfer must either both be set or both be omitted.".into(),
+            )
+        }
     };
-    mat(XYZ_D65_TO_AP0, xyz)
+    if gamut != "ACEScg" && gamut != "ACES2065-1" {
+        return Err("Scene-reference EXR must use ACEScg or ACES2065-1.".into());
+    }
+    if transfer != "Linear" {
+        return Err(
+            "Scene-reference ACEScg and ACES2065-1 EXRs must use a Linear transfer.".into(),
+        );
+    }
+    for px in &mut rgb {
+        for c in px.iter_mut() {
+            *c = decode_transfer(*c, transfer);
+        }
+        *px = source_to_ap0(*px, gamut);
+    }
+    blur(&mut rgb, width, height, req.blur_sigma);
+    Ok(rgb)
+}
+
+fn effective_source_gamut<'a>(
+    req: &'a Request,
+    embedded_pair: Option<(&'a str, &'a str)>,
+) -> Option<&'a str> {
+    req.gamut
+        .as_deref()
+        .or_else(|| embedded_pair.map(|(gamut, _)| gamut))
+}
+
+fn prepare_legacy_ap0(
+    rgb: Vec<[f32; 3]>,
+    width: usize,
+    height: usize,
+    req: &Request,
+    icc_profile: Option<&[u8]>,
+    embedded_pair: Option<(&str, &str)>,
+) -> Result<Vec<[f32; 3]>, String> {
+    let mut xyz =
+        prepare_display_rgb_to_xyz_d65(rgb, width, height, req, icc_profile, embedded_pair)?;
+    for pixel in &mut xyz {
+        *pixel = mat(XYZ_D65_TO_AP0, *pixel);
+    }
+    Ok(xyz)
 }
 fn blur(rgb: &mut [[f32; 3]], width: usize, height: usize, sigma: f32) {
     if sigma <= 0.0 {
@@ -2177,6 +2259,67 @@ fn parse_jpeg_inner(data: &[u8]) -> Result<Pixels, String> {
 fn parse_jpeg(data: &[u8]) -> Result<Pixels, String> {
     parse_jpeg_inner(data)
 }
+
+fn detect_exr_gamut(c: Chromaticities) -> Option<&'static str> {
+    let close = |a: f32, b: f32| (a - b).abs() < 0.001;
+    let p3 = close(c.red.0, 0.680)
+        && close(c.red.1, 0.320)
+        && close(c.green.0, 0.265)
+        && close(c.green.1, 0.690)
+        && close(c.blue.0, 0.150)
+        && close(c.blue.1, 0.060)
+        && close(c.white.0, 0.3127)
+        && close(c.white.1, 0.3290);
+    let rec709 = close(c.red.0, 0.640)
+        && close(c.red.1, 0.330)
+        && close(c.green.0, 0.300)
+        && close(c.green.1, 0.600)
+        && close(c.blue.0, 0.150)
+        && close(c.blue.1, 0.060)
+        && close(c.white.0, 0.3127)
+        && close(c.white.1, 0.3290);
+    let rec2020 = close(c.red.0, 0.708)
+        && close(c.red.1, 0.292)
+        && close(c.green.0, 0.170)
+        && close(c.green.1, 0.797)
+        && close(c.blue.0, 0.131)
+        && close(c.blue.1, 0.046)
+        && close(c.white.0, 0.3127)
+        && close(c.white.1, 0.3290);
+    // Photoshop commonly rounds the ACEScg red primary to (0.707, 0.293).
+    // Validate every primary and the D60 white so this tolerance cannot make
+    // an unrelated chromaticity set look like ACEScg.
+    let acescg = (c.red.0 - 0.713).abs() < 0.01
+        && close(c.red.1, 0.293)
+        && close(c.green.0, 0.165)
+        && close(c.green.1, 0.830)
+        && close(c.blue.0, 0.128)
+        && close(c.blue.1, 0.044)
+        && close(c.white.0, 0.32168)
+        && close(c.white.1, 0.33767);
+    let aces2065 = close(c.red.0, 0.7347)
+        && close(c.red.1, 0.2653)
+        && close(c.green.0, 0.0)
+        && close(c.green.1, 1.0)
+        && close(c.blue.0, 0.0001)
+        && close(c.blue.1, -0.0770)
+        && close(c.white.0, 0.32168)
+        && close(c.white.1, 0.33767);
+    if aces2065 {
+        Some("ACES2065-1")
+    } else if acescg {
+        Some("ACEScg")
+    } else if rec2020 {
+        Some("Rec.2020")
+    } else if p3 {
+        Some("Display P3 / P3-D65")
+    } else if rec709 {
+        Some("Rec.709 / sRGB")
+    } else {
+        None
+    }
+}
+
 fn parse_exr(data: &[u8]) -> Result<Pixels, String> {
     let reader = exr::prelude::read()
         .no_deep_data()
@@ -2208,27 +2351,11 @@ fn parse_exr(data: &[u8]) -> Result<Pixels, String> {
         return Err("EXR channel dimensions do not match".into());
     }
     let rgb = (0..rv.len()).map(|i| [rv[i], gv[i], bv[i]]).collect();
-    let detected_gamut = image.attributes.chromaticities.and_then(|c| {
-        let close = |a: f32, b: f32| (a - b).abs() < 0.001;
-        let p3 = close(c.red.0, 0.680)
-            && close(c.red.1, 0.320)
-            && close(c.green.0, 0.265)
-            && close(c.green.1, 0.690);
-        let rec = close(c.red.0, 0.640)
-            && close(c.red.1, 0.330)
-            && close(c.green.0, 0.300)
-            && close(c.green.1, 0.600);
-        let ap1 = close(c.red.0, 0.713) && close(c.red.1, 0.293);
-        if ap1 {
-            Some("ACEScg".to_string())
-        } else if p3 {
-            Some("Display P3 / P3-D65".to_string())
-        } else if rec {
-            Some("Rec.709 / sRGB".to_string())
-        } else {
-            None
-        }
-    });
+    let detected_gamut = image
+        .attributes
+        .chromaticities
+        .and_then(detect_exr_gamut)
+        .map(str::to_string);
     let transfer = detected_gamut.as_ref().map(|_| "Linear".to_string());
     Ok(Pixels {
         width,
@@ -2332,19 +2459,24 @@ pub fn inspect(data: Vec<u8>, format: String) -> Result<JsValue, JsValue> {
 // Browser image-locator bridges.  These wrappers keep the decomposition
 // package's generated JavaScript self-contained while the numerical picker
 // implementation remains owned by the color-core crate.
-#[wasm_bindgen(js_name = image_picker_analyze_ap0)]
-pub fn picker_analyze_ap0(red: f64, green: f64, blue: f64) -> Vec<f64> {
-    modcam16_color_core::picker::picker_analyze_ap0(red, green, blue)
+#[wasm_bindgen(js_name = image_picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white)]
+pub fn picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
+    x: f64,
+    y: f64,
+    z: f64,
+    treat_display_linear_one_as_hdr203_white: bool,
+) -> Vec<f64> {
+    modcam16_color_core::picker::picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
+        x,
+        y,
+        z,
+        treat_display_linear_one_as_hdr203_white,
+    )
 }
 
-#[wasm_bindgen(js_name = image_picker_analyze_ap0_scaled)]
-pub fn picker_analyze_ap0_scaled(
-    red: f64,
-    green: f64,
-    blue: f64,
-    scale203: bool,
-) -> Vec<f64> {
-    modcam16_color_core::picker::picker_analyze_ap0_scaled(red, green, blue, scale203)
+#[wasm_bindgen(js_name = image_picker_analyze_scene_ap0)]
+pub fn picker_analyze_scene_ap0(red: f64, green: f64, blue: f64) -> Vec<f64> {
+    modcam16_color_core::picker::picker_analyze_scene_ap0(red, green, blue)
 }
 
 #[wasm_bindgen(js_name = image_picker_code_from_acescg)]
@@ -2352,13 +2484,22 @@ pub fn picker_code_from_acescg(red: f64, green: f64, blue: f64) -> Vec<f64> {
     modcam16_color_core::picker::picker_code_from_acescg(red, green, blue)
 }
 
-#[wasm_bindgen(js_name = image_picker_display_rgb_ap0_batch)]
-pub fn picker_display_rgb_ap0_batch(
+#[wasm_bindgen(js_name = image_picker_display_rgb_xyz_d65_batch)]
+pub fn picker_display_rgb_xyz_d65_batch(
     pixels: &[f32],
     view: u32,
-    scale203: bool,
+    treat_display_linear_one_as_hdr203_white: bool,
 ) -> Vec<f32> {
-    modcam16_color_core::picker::picker_display_rgb_ap0_batch(pixels, view, scale203)
+    modcam16_color_core::picker::picker_display_rgb_xyz_d65_batch(
+        pixels,
+        view,
+        treat_display_linear_one_as_hdr203_white,
+    )
+}
+
+#[wasm_bindgen(js_name = image_picker_display_rgb_scene_ap0_batch)]
+pub fn picker_display_rgb_scene_ap0_batch(pixels: &[f32], view: u32) -> Vec<f32> {
+    modcam16_color_core::picker::picker_display_rgb_scene_ap0_batch(pixels, view)
 }
 
 /// Prepare a bounded JPEG source preview without decoding the full-resolution
@@ -2378,7 +2519,7 @@ pub fn prepare_jpeg_preview(
         .gamut
         .as_deref()
         .zip(p.summary.transfer.as_deref());
-    let rgb = prepare_rgb(
+    let rgb = prepare_display_rgb_to_xyz_d65(
         p.rgb,
         width,
         height,
@@ -2395,7 +2536,7 @@ fn parse_request(value: JsValue) -> Result<Request, String> {
     let req: Request = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
     if req.format.eq_ignore_ascii_case("dng") && (req.gamut.is_some() || req.transfer.is_some()) {
         return Err(
-            "DNG sources use their embedded camera calibration and linear ACES2065-1/AP0 output."
+            "DNG sources use their embedded camera calibration and linear CIE XYZ-D65 output."
                 .into(),
         );
     }
@@ -2874,20 +3015,42 @@ fn encode_result(
 }
 
 fn process(mut p: Pixels, req: Request) -> Result<JsValue, String> {
-    if !req.format.eq_ignore_ascii_case("dng") {
+    if req.format.eq_ignore_ascii_case("dng") {
+        // The decomposition solver consumes AP0. Adapt its private solver
+        // copy while keeping the image-locator PreparedImage boundary at
+        // XYZ-D65.
+        for pixel in &mut p.rgb {
+            *pixel = mat(XYZ_D65_TO_AP0, *pixel);
+        }
+    } else {
         let embedded_pair = p
             .summary
             .gamut
             .as_deref()
             .zip(p.summary.transfer.as_deref());
-        p.rgb = prepare_rgb(
-            std::mem::take(&mut p.rgb),
-            p.width,
-            p.height,
-            &req,
-            p.icc_profile.as_deref(),
-            embedded_pair,
-        )?;
+        if req.format.eq_ignore_ascii_case("exr")
+            && matches!(
+                effective_source_gamut(&req, embedded_pair),
+                Some("ACEScg" | "ACES2065-1")
+            )
+        {
+            p.rgb = prepare_scene_reference_exr(
+                std::mem::take(&mut p.rgb),
+                p.width,
+                p.height,
+                &req,
+                embedded_pair,
+            )?;
+        } else {
+            p.rgb = prepare_legacy_ap0(
+                std::mem::take(&mut p.rgb),
+                p.width,
+                p.height,
+                &req,
+                p.icc_profile.as_deref(),
+                embedded_pair,
+            )?;
+        }
     }
     let (base, exposure_norm_ev, exposure, stats) = solve_prepared(&p.rgb, &req);
     let report = report_from_stats(p.width, p.height, &req, &stats, p.summary.warnings.clone());
@@ -3049,14 +3212,23 @@ pub fn prepare(data: Vec<u8>, request: JsValue) -> Result<PreparedImage, JsValue
             .gamut
             .as_deref()
             .zip(p.summary.transfer.as_deref());
-        prepare_rgb(
-            p.rgb,
-            width,
-            height,
-            &req,
-            p.icc_profile.as_deref(),
-            embedded_pair,
-        )
+        if req.format.eq_ignore_ascii_case("exr")
+            && matches!(
+                effective_source_gamut(&req, embedded_pair),
+                Some("ACEScg" | "ACES2065-1")
+            )
+        {
+            prepare_scene_reference_exr(p.rgb, width, height, &req, embedded_pair)
+        } else {
+            prepare_display_rgb_to_xyz_d65(
+                p.rgb,
+                width,
+                height,
+                &req,
+                p.icc_profile.as_deref(),
+                embedded_pair,
+            )
+        }
         .map_err(|e| JsValue::from_str(&e))?
     };
     prepared_payload_rgb(rgb, width, height, warnings, Some(p.summary))
@@ -3077,8 +3249,9 @@ pub fn prepare_pixels(
         ));
     }
     let rgb = flat_to_rgb(data).map_err(|e| JsValue::from_str(&e))?;
-    let rgb = prepare_rgb(rgb, width as usize, height as usize, &req, None, None)
-        .map_err(|e| JsValue::from_str(&e))?;
+    let rgb =
+        prepare_display_rgb_to_xyz_d65(rgb, width as usize, height as usize, &req, None, None)
+            .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload_rgb(rgb, width as usize, height as usize, Vec::new(), None)
         .map_err(|e| JsValue::from_str(&e))
 }
@@ -3127,9 +3300,14 @@ pub fn prepare_heic_pixels(
         )
         .map_err(|e| JsValue::from_str(&e))?;
         let gain_gamut = req.gamut.as_deref().unwrap_or("Display P3 / P3-D65");
+        if matches!(gain_gamut, "ACEScg" | "ACES2065-1") {
+            return Err(JsValue::from_str(
+                "ACEScg and ACES2065-1 are scene-reference EXR formats, not HEIC display primaries.",
+            ));
+        }
         let prepared: Vec<[f32; 3]> = rgb
             .into_iter()
-            .map(|px| source_to_ap0(px, gain_gamut))
+            .map(|px| source_to_xyz_d65(px, gain_gamut))
             .collect();
         let prepared = {
             let mut value = prepared;
@@ -3139,7 +3317,7 @@ pub fn prepare_heic_pixels(
         return prepared_payload_rgb(prepared, width as usize, height as usize, Vec::new(), None)
             .map_err(|e| JsValue::from_str(&e));
     }
-    let prepared = prepare_rgb(
+    let prepared = prepare_display_rgb_to_xyz_d65(
         rgb,
         width as usize,
         height as usize,
@@ -3455,6 +3633,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exr_chromaticities_recognize_rec2020_and_both_aces_gamuts() {
+        let rec2020 = Chromaticities {
+            red: Vec2(0.708, 0.292),
+            green: Vec2(0.170, 0.797),
+            blue: Vec2(0.131, 0.046),
+            white: Vec2(0.3127, 0.3290),
+        };
+        assert_eq!(detect_exr_gamut(rec2020), Some("Rec.2020"));
+
+        let photoshop_acescg = Chromaticities {
+            red: Vec2(0.7070003, 0.2929998),
+            green: Vec2(0.1649950, 0.8300040),
+            blue: Vec2(0.1280000, 0.0440001),
+            white: Vec2(0.3216785, 0.3376728),
+        };
+        assert_eq!(detect_exr_gamut(photoshop_acescg), Some("ACEScg"));
+        let aces2065 = Chromaticities {
+            red: Vec2(0.7347, 0.2653),
+            green: Vec2(0.0, 1.0),
+            blue: Vec2(0.0001, -0.0770),
+            white: Vec2(0.32168, 0.33767),
+        };
+        assert_eq!(detect_exr_gamut(aces2065), Some("ACES2065-1"));
+    }
+
+    #[test]
     fn dng_demosaic_preserves_signed_and_hdr_samples() {
         let mosaic = (0..256)
             .map(|i| {
@@ -3549,7 +3753,7 @@ mod tests {
         // This is the same no-ForwardMatrix construction used for an iPhone
         // DNG: ColorMatrix is XYZ-to-camera, while AsShotNeutral is a camera
         // neutral sample.  The integrated transform must send that sample to
-        // the D65/AP0 neutral without a second per-pixel WB multiplication.
+        // D65 XYZ white without a second per-pixel WB multiplication.
         let color_matrix = [
             [1.208984971, -0.5616751313, -0.2423728853],
             [-0.4658203721, 1.533753872, -0.05347846821],
@@ -3566,25 +3770,25 @@ mod tests {
             .zip(D50_WHITE)
             .all(|(actual, expected)| (actual - expected).abs() < 2.0e-5));
 
-        let camera_to_ap0 = mat_mul(XYZ_D65_TO_AP0, mat_mul(D50_TO_D65_CAT02, camera_to_xyz_d50));
+        let camera_to_xyz_d65 = mat_mul(D50_TO_D65_CAT02, camera_to_xyz_d50);
         let mut pixel = vec![camera_neutral];
-        apply_dng_camera_transform(&mut pixel, camera_to_ap0, 1.0);
-        assert!(pixel[0].iter().all(|value| (*value - 1.0).abs() < 5.0e-4));
+        apply_dng_camera_transform(&mut pixel, camera_to_xyz_d65, 1.0);
+        assert!(pixel[0]
+            .iter()
+            .zip(D65_WHITE)
+            .all(|(value, expected)| (*value - expected).abs() < 5.0e-4));
 
         // A second WB would turn the neutral into a strongly chromatic sample;
-        // retain this assertion as a guard against reintroducing that cast.
-        let double_wb = mat(camera_to_ap0, [1.0, 1.0, 1.0]);
+        // retain this assertion as a guard against applying that cast.
+        let double_wb = mat(camera_to_xyz_d65, [1.0, 1.0, 1.0]);
         assert!((double_wb[0] - double_wb[2]).abs() > 0.2);
     }
 
     #[test]
-    fn d65_rgb_white_maps_to_the_aces_ap0_white() {
-        let ap0 = source_to_ap0([1.0; 3], "Rec.709 / sRGB");
-        // RGB white is represented as unit AP0 values. The corresponding
-        // ACES D60 white tristimulus is an XYZ-space quantity, not the AP0
-        // RGB result asserted here.
-        let expected = [1.0, 1.0, 1.0];
-        assert!(ap0
+    fn d65_rgb_white_maps_to_xyz_d65() {
+        let xyz = source_to_xyz_d65([1.0; 3], "Rec.709 / sRGB");
+        let expected = [0.9504559, 1.0, 1.0890578];
+        assert!(xyz
             .iter()
             .zip(expected)
             .all(|(actual, expected)| (actual - expected).abs() < 2.0e-4));
@@ -3668,7 +3872,7 @@ mod tests {
         }
         assert!(
             saw_negative && saw_above_one,
-            "DNG development must retain signed/HDR AP0 values"
+            "DNG development must retain signed/HDR XYZ-D65 values"
         );
     }
 
