@@ -1,14 +1,15 @@
 export const PATCH_ENTRY_RADIUS = 0.02;
 export const PATCH_SNAP_DISTANCE = 0.005;
 export const J_SNAP_DISTANCE = 0.005;
+export const BACKGROUND_J_SNAP_DISTANCE = 0.01;
 // Background is a normalized J' neutral coordinate.
 export const BACKGROUND_MAX = 1.0;
 export const J_HK_PEAK = 217.2768649129496;
 export const J_REFERENCE_WHITE = 100 / J_HK_PEAK;
-export const ROLLING_BALL_SENSITIVITY = 0.25;
-export const ROLLING_BALL_MAX_ACCELERATION = 4;
-export const ROLLING_BALL_ACCELERATION_SPEED = 2.5;
-export const ROLLING_BALL_VELOCITY_SMOOTHING_MS = 45;
+export const TRACK_SENSITIVITY = 0.25;
+export const TRACK_MAX_ACCELERATION = 4;
+export const TRACK_ACCELERATION_SPEED = 2.5;
+export const TRACK_VELOCITY_SMOOTHING_MS = 45;
 
 export type Point = { x: number; y: number };
 export type CovarianceEllipse = {
@@ -29,6 +30,9 @@ export type JSnapTarget =
   | { kind: "reference"; value: number }
   | { kind: "patch"; value: number }
   | { kind: "average"; value: number };
+export type BackgroundJSnapTarget =
+  | { kind: "foreground"; value: number }
+  | { kind: "reference"; value: number };
 export type SnapAxis = "j" | "xy" | null;
 
 export function clamp(value: number, minimum: number, maximum: number): number {
@@ -54,38 +58,38 @@ export function slicePoint(
   };
 }
 
-export function rollingWheelDelta(
+export function trackwheelDelta(
   j: number,
   deltaY: number,
   height: number,
-  sensitivity = ROLLING_BALL_SENSITIVITY,
+  sensitivity = TRACK_SENSITIVITY,
   acceleration = 1,
 ): number {
   const scale = Number.isFinite(height) && height > 0 ? height : 1;
   const factor = Number.isFinite(sensitivity)
     ? sensitivity
-    : ROLLING_BALL_SENSITIVITY;
+    : TRACK_SENSITIVITY;
   const speedFactor = Number.isFinite(acceleration)
-    ? Math.max(0, Math.min(ROLLING_BALL_MAX_ACCELERATION, acceleration))
+    ? Math.max(0, Math.min(TRACK_MAX_ACCELERATION, acceleration))
     : 1;
   return clamp01(j - (deltaY / scale) * factor * speedFactor);
 }
 
-export function rollingBallDelta(
+export function trackpadDelta(
   x: number,
   y: number,
   deltaX: number,
   deltaY: number,
   width: number,
   height: number,
-  sensitivity = ROLLING_BALL_SENSITIVITY,
+  sensitivity = TRACK_SENSITIVITY,
   acceleration = 1,
 ): Point {
   const scaleX = Number.isFinite(width) && width > 0 ? width : 1;
   const scaleY = Number.isFinite(height) && height > 0 ? height : 1;
-  const factor = Number.isFinite(sensitivity) ? sensitivity : ROLLING_BALL_SENSITIVITY;
+  const factor = Number.isFinite(sensitivity) ? sensitivity : TRACK_SENSITIVITY;
   const speedFactor = Number.isFinite(acceleration)
-    ? Math.max(0, Math.min(ROLLING_BALL_MAX_ACCELERATION, acceleration))
+    ? Math.max(0, Math.min(TRACK_MAX_ACCELERATION, acceleration))
     : 1;
   return {
     x: clamp01(x + (deltaX / scaleX) * factor * speedFactor),
@@ -93,23 +97,23 @@ export function rollingBallDelta(
   };
 }
 
-export function rollingBallAcceleration(normalizedSpeed: number): number {
+export function trackMotionAcceleration(normalizedSpeed: number): number {
   const speed = Math.max(0, Number.isFinite(normalizedSpeed) ? normalizedSpeed : 0);
   return Math.min(
-    ROLLING_BALL_MAX_ACCELERATION,
-    1 + (ROLLING_BALL_MAX_ACCELERATION - 1) *
-      (1 - Math.exp(-speed / ROLLING_BALL_ACCELERATION_SPEED)),
+    TRACK_MAX_ACCELERATION,
+    1 + (TRACK_MAX_ACCELERATION - 1) *
+      (1 - Math.exp(-speed / TRACK_ACCELERATION_SPEED)),
   );
 }
 
-export function rollingBallVelocity(
+export function trackMotionVelocity(
   previous: Point,
   deltaX: number,
   deltaY: number,
   width: number,
   height: number,
   elapsedMs: number,
-  smoothingMs = ROLLING_BALL_VELOCITY_SMOOTHING_MS,
+  smoothingMs = TRACK_VELOCITY_SMOOTHING_MS,
 ): Point {
   const scaleX = Number.isFinite(width) && width > 0 ? width : 1;
   const scaleY = Number.isFinite(height) && height > 0 ? height : 1;
@@ -118,7 +122,7 @@ export function rollingBallVelocity(
     1,
     Number.isFinite(smoothingMs)
       ? smoothingMs
-      : ROLLING_BALL_VELOCITY_SMOOTHING_MS,
+      : TRACK_VELOCITY_SMOOTHING_MS,
   );
   const alpha = 1 - Math.exp(-elapsed / smoothing);
   const rawX = (deltaX / scaleX) * (1000 / elapsed);
@@ -226,6 +230,24 @@ export function nearestJSnapTarget(
   return nearest && nearestDistance <= threshold ? nearest : null;
 }
 
+export function nearestBackgroundJSnapTarget(
+  backgroundJ: number,
+  foregroundJ: number,
+  referenceJ = J_REFERENCE_WHITE,
+  threshold = BACKGROUND_J_SNAP_DISTANCE,
+): BackgroundJSnapTarget | null {
+  const target = nearestJSnapTarget(
+    backgroundJ,
+    foregroundJ,
+    referenceJ,
+    threshold,
+  );
+  if (target?.kind === "patch")
+    return { kind: "foreground", value: target.value };
+  if (target?.kind === "reference") return target;
+  return null;
+}
+
 export function snapCartesianPoint(
   x: number,
   y: number,
@@ -245,6 +267,7 @@ export function projectSnapCode(
   axis: SnapAxis = null,
   previous = real,
   averageJ?: number,
+  allowJSnap = true,
 ): { j: number; x: number; y: number } {
   const projected = axis === null ? { ...real } : { ...previous };
   if (axis === "j") projected.j = real.j;
@@ -252,7 +275,7 @@ export function projectSnapCode(
     projected.x = real.x;
     projected.y = real.y;
   }
-  if (axis !== "xy") {
+  if (axis !== "xy" && allowJSnap) {
     const jTarget = nearestJSnapTarget(
       real.j,
       target?.kind === "patch" ? patchJ : undefined,

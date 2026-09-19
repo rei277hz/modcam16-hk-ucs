@@ -1,32 +1,18 @@
 //! Fixed HDR-Rec.2020 authoring. View IDs affect presentation only.
-//! Legacy normalized/polar exports in lib.rs remain for regression coverage.
+//! Normalized Cartesian picker exports coexist with the profile helpers in
+//! lib.rs for the public WASM surface.
 use super::*;
 
-const SOURCE_SCALE: f64 = 2.03;
-const SOURCE_PEAK: f64 = 10.0 / SOURCE_SCALE;
+const HDR203_DIFFUSE_WHITE_SCALE: f64 = 2.03;
+const AUTHORING_REC2020_PEAK: f64 = 10.0 / HDR203_DIFFUSE_WHITE_SCALE;
 const SOURCE_BACKGROUND_MAX: f64 = 1.0;
 // modCAM16-HK of neutral source Rec.2020 = 1000/203, independently checked in Python.
 const PICKER_J_PEAK: f64 = 217.2768649129496;
-// Inverse of the decomposition module's D65-XYZ -> ACES2065-1 matrix.
-// Prepared image pixels are linear AP0, so this recovers source display XYZ
-// before the fixed HDR-Rec.2020 inverse is applied.
-const AP0_TO_XYZ_D65: [[f64; 3]; 3] = [
-    [0.938279841815694, -0.004451445665284, 0.016627526998033],
-    [0.337368891456768, 0.729521570671540, -0.066890458295250],
-    [0.001173949539939, -0.003710705591141, 1.091594511691737],
-];
-#[cfg(test)]
-const XYZ_D65_TO_AP0: [[f64; 3]; 3] = [
-    [1.0634955, 0.00640891, -0.01580679],
-    [-0.49207413, 1.3682234, 0.09133709],
-    [-0.00281646, 0.00464417, 0.91641857],
-];
-
 fn source_valid(rgb: [f64; 3]) -> bool {
-    finite3(rgb) && min3(rgb) >= -1.0e-8 && max3(rgb) <= SOURCE_PEAK + 1.0e-7
+    finite3(rgb) && min3(rgb) >= -1.0e-8 && max3(rgb) <= AUTHORING_REC2020_PEAK + 1.0e-7
 }
 
-fn authored_valid(xyz: [f64; 3], full_rec2020: bool) -> bool {
+fn rec2020_authored_valid(xyz: [f64; 3], full_rec2020: bool) -> bool {
     let rec2020 = mat(&XYZ_TO_REC2020, xyz);
     let p3 = mat(&XYZ_TO_P3, xyz);
     source_valid(rec2020) && (full_rec2020 || source_valid(p3))
@@ -46,10 +32,10 @@ fn source_sample_mode(code: [f64; 3], full_rec2020: bool) -> Sample {
         None => [f64::NAN; 3],
     };
     let source_rgb = mat(&XYZ_TO_REC2020, xyz);
-    let valid = finite3(xyz) && authored_valid(xyz, full_rec2020);
+    let valid = finite3(xyz) && rec2020_authored_valid(xyz, full_rec2020);
     // Never present a clipped inverse as the scene value of an invalid pick.
     let acescg = if valid {
-        aces_output::inverse(0, xyz.map(|v| v * SOURCE_SCALE))
+        aces_output::inverse_from_xyz_d65(0, xyz.map(|v| v * HDR203_DIFFUSE_WHITE_SCALE))
     } else {
         [f64::NAN; 3]
     };
@@ -66,38 +52,6 @@ fn source_sample(code: [f64; 3]) -> Sample {
     source_sample_mode(code, true)
 }
 
-fn desaturated_code(code: [f64; 3]) -> [f64; 3] {
-    [
-        code[0],
-        0.5 + 0.75 * (code[1] - 0.5),
-        0.5 + 0.75 * (code[2] - 0.5),
-    ]
-}
-
-fn clipped_appearance_acescg(code: [f64; 3]) -> Option<[f64; 3]> {
-    let (j, chroma, hue) = decode_scaled_jhk(code, PICKER_J_PEAK)?;
-    let xyz = modcam_to_xyz(normalized_model(2), j, chroma, hue);
-    if !finite3(xyz) {
-        return None;
-    }
-    let clipped_source = mat(&XYZ_TO_REC2020, xyz).map(|value| value.clamp(0.0, SOURCE_PEAK));
-    if !finite3(clipped_source) {
-        return None;
-    }
-    let clipped_xyz = mat(&REC2020_TO_XYZ, clipped_source);
-    let acescg = aces_output::inverse(0, clipped_xyz.map(|value| value * SOURCE_SCALE));
-    finite3(acescg).then_some(acescg)
-}
-
-fn appearance_acescg(code: [f64; 3], desaturate: bool) -> Option<[f64; 3]> {
-    if desaturate {
-        clipped_appearance_acescg(desaturated_code(code))
-    } else {
-        let sample = source_sample_mode(code, true);
-        sample.valid.then_some(sample.acescg)
-    }
-}
-
 fn view_rgb(view: u32, acescg: [f64; 3]) -> [f64; 3] {
     let matrix = match view {
         0 => &XYZ_TO_REC2020,
@@ -110,14 +64,15 @@ fn view_rgb(view: u32, acescg: [f64; 3]) -> [f64; 3] {
 
 fn neutral_source(j: f64) -> f64 {
     let xyz = modcam_to_xyz(normalized_model(2), j * PICKER_J_PEAK, 0.0, 0.0);
-    xyz[1].clamp(0.0, SOURCE_PEAK)
+    xyz[1].clamp(0.0, AUTHORING_REC2020_PEAK)
 }
 
 /// Layout (all floating point):
 /// 0 valid; 1..3 canonical ACEScg; 4..6 source-preview display P3;
 /// 7..9 source-preview sRGB; 10..12 sRGB-transfer-encoded AP1;
 /// 13..18 reserved; 19 foreground-matching normalized J';
-/// 20..22 authored J'/x'/y'; 23..25 linear authoring Rec.2020 (203-nit units);
+/// 20..22 Rec.2020-authored J'/x'/y'; 23..25 linear Rec.2020 authoring values
+/// (203-nit units);
 /// 26..28 picked view linear RGB (100-nit units);
 /// 29..31 surround view linear RGB (100-nit units); 32 reserved.
 #[wasm_bindgen]
@@ -128,7 +83,6 @@ pub fn picker_evaluate_mode(
     y: f64,
     background_j: f64,
     full_rec2020: bool,
-    desaturate: bool,
 ) -> Vec<f64> {
     let sample = source_sample_mode([j, x, y], full_rec2020);
     let requested_background_j = if background_j.is_finite() {
@@ -137,8 +91,11 @@ pub fn picker_evaluate_mode(
         0.0
     };
     let background_source = neutral_source(requested_background_j);
-    let background_xyz = mat(&REC2020_TO_XYZ, [background_source * SOURCE_SCALE; 3]);
-    let background_scene = aces_output::inverse(0, background_xyz);
+    let background_xyz = mat(
+        &REC2020_TO_XYZ,
+        [background_source * HDR203_DIFFUSE_WHITE_SCALE; 3],
+    );
+    let background_scene = aces_output::inverse_from_xyz_d65(0, background_xyz);
     let mut out = vec![if sample.valid { 1.0 } else { 0.0 }];
     out.extend(sample.acescg);
     out.extend(display_xyz_f64(sample.xyz, &XYZ_TO_P3));
@@ -148,9 +105,7 @@ pub fn picker_evaluate_mode(
     out.extend([j, j, x, y]);
     out.extend(sample.source_rgb);
     out.extend(if sample.valid {
-        appearance_acescg([j, x, y], desaturate)
-            .map(|value| view_rgb(view, value))
-            .unwrap_or([0.0; 3])
+        view_rgb(view, sample.acescg)
     } else {
         [0.0; 3]
     });
@@ -161,7 +116,7 @@ pub fn picker_evaluate_mode(
 
 #[wasm_bindgen]
 pub fn picker_evaluate(view: u32, j: f64, x: f64, y: f64, background_j: f64) -> Vec<f64> {
-    picker_evaluate_mode(view, j, x, y, background_j, true, false)
+    picker_evaluate_mode(view, j, x, y, background_j, true)
 }
 
 /// Import sRGB-transfer encoded AP1 and solve coordinates in fixed HDR Rec.2020.
@@ -169,9 +124,9 @@ pub fn picker_evaluate(view: u32, j: f64, x: f64, y: f64, background_j: f64) -> 
 #[wasm_bindgen]
 pub fn picker_from_encoded_mode(red: f64, green: f64, blue: f64, full_rec2020: bool) -> Vec<f64> {
     let scene = [red, green, blue].map(decode_srgb);
-    let xyz = aces_output::forward(0, scene).map(|v| v / SOURCE_SCALE);
+    let xyz = aces_output::forward(0, scene).map(|v| v / HDR203_DIFFUSE_WHITE_SCALE);
     let (code, domain_valid) = scaled_jhk_from_xyz(xyz, PICKER_J_PEAK);
-    let valid = domain_valid && authored_valid(xyz, full_rec2020);
+    let valid = domain_valid && rec2020_authored_valid(xyz, full_rec2020);
     vec![if valid { 1.0 } else { 0.0 }, code[0], code[1], code[2]]
 }
 
@@ -180,52 +135,34 @@ pub fn picker_from_encoded(red: f64, green: f64, blue: f64) -> Vec<f64> {
     picker_from_encoded_mode(red, green, blue, true)
 }
 
-/// Convert one prepared ACES2065-1/AP0 sample to the canonical ACEScg value
-/// and normalized J'/x'/y' coordinates used by the image locator. Prepared
-/// image rasters from the reference decoder are already linear AP0, so this
-/// is numerically the same fixed HDR-Rec.2020 inverse path used for authored picker
-/// coordinates without reinterpreting the source a second time.
-///
-/// Return layout: [valid, ACEScg R/G/B, J', x', y'].
-#[wasm_bindgen]
-pub fn picker_analyze_ap0(red: f64, green: f64, blue: f64) -> Vec<f64> {
-    // Analysis is canonical and independent of the appearance-only scale
-    // toggle.  The fixed authoring path always applies 2.03; the worker uses
-    // `scale203` only when rendering image/loupe display pixels.
-    picker_analyze_ap0_scaled(red, green, blue, true)
-}
-
-/// Analyze a prepared AP0 sample, optionally applying the 2.03 SDR-to-HDR
-/// source scale before the fixed HDR-Rec.2020 inverse.
-#[wasm_bindgen]
-pub fn picker_analyze_ap0_scaled(red: f64, green: f64, blue: f64, scale203: bool) -> Vec<f64> {
-    let ap0 = [red, green, blue];
-    // Prepared image rasters are either in the picker source unit (203 nits
-    // per Rec.2020 unit) or absolute HDR/100-nit units. Normalize the latter back
-    // to the canonical source unit for J'/x'/y' and validity, while passing
-    // physical 100-nit XYZ unchanged to the fixed HDR inverse.
-    let raster_xyz = mat(&AP0_TO_XYZ_D65, ap0);
-    let source_xyz = if scale203 {
+fn picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white_impl(
+    raster_xyz: [f64; 3],
+    treat_display_linear_one_as_hdr203_white: bool,
+) -> Vec<f64> {
+    let source_xyz = if treat_display_linear_one_as_hdr203_white {
         raster_xyz
     } else {
-        raster_xyz.map(|v| v / SOURCE_SCALE)
+        raster_xyz.map(|v| v / HDR203_DIFFUSE_WHITE_SCALE)
     };
     let raster_rgb = mat(&XYZ_TO_REC2020, raster_xyz);
-    let source_peak = if scale203 { SOURCE_PEAK } else { 10.0 };
+    let source_peak = if treat_display_linear_one_as_hdr203_white {
+        AUTHORING_REC2020_PEAK
+    } else {
+        10.0
+    };
     let (code, domain_valid) =
         super::scaled_jhk_from_xyz_with_tolerance(source_xyz, PICKER_J_PEAK, 1.0e-4);
     let acescg = if finite3(raster_xyz) && source_valid_with_peak(raster_rgb, source_peak) {
-        let inverse_xyz = if scale203 {
-            raster_xyz.map(|v| v * SOURCE_SCALE)
+        let inverse_xyz = if treat_display_linear_one_as_hdr203_white {
+            raster_xyz.map(|v| v * HDR203_DIFFUSE_WHITE_SCALE)
         } else {
             raster_xyz
         };
-        aces_output::inverse(0, inverse_xyz)
+        aces_output::inverse_from_xyz_d65(0, inverse_xyz)
     } else {
         [f64::NAN; 3]
     };
-    let valid = finite3(ap0)
-        && finite3(raster_xyz)
+    let valid = finite3(raster_xyz)
         && finite3(acescg)
         && domain_valid
         && source_valid_with_peak(raster_rgb, source_peak);
@@ -236,86 +173,95 @@ pub fn picker_analyze_ap0_scaled(red: f64, green: f64, blue: f64, scale203: bool
     out
 }
 
-/// Convert prepared AP0 into selected-view display-linear RGB. This is the
-/// appearance-only path used by loaded-image and loupe previews.
+/// Analyze a prepared display-referred XYZ-D65 sample. This is the canonical
+/// display-image input path; RGB sources must be adapted to XYZ-D65 before
+/// reaching it, while ACEScg/AP0 remain scene-reference-only formats.
 #[wasm_bindgen]
-pub fn picker_display_rgb_ap0_mode(
-    red: f64,
-    green: f64,
-    blue: f64,
-    view: u32,
-    scale203: bool,
-    desaturate: bool,
+pub fn picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
+    x: f64,
+    y: f64,
+    z: f64,
+    treat_display_linear_one_as_hdr203_white: bool,
 ) -> Vec<f64> {
-    let source_xyz = mat(&AP0_TO_XYZ_D65, [red, green, blue]);
-    let scale = if scale203 { SOURCE_SCALE } else { 1.0 };
-    let acescg = aces_output::inverse(0, source_xyz.map(|v| v * scale));
-    if !desaturate {
-        return view_rgb(view, acescg).to_vec();
-    }
-    let source_peak = if scale203 { SOURCE_PEAK } else { 10.0 };
-    let source_rgb = mat(&XYZ_TO_REC2020, source_xyz);
-    if !source_valid_with_peak(source_rgb, source_peak) {
-        return vec![0.0; 3];
-    }
-    let normalized_xyz = if scale203 {
-        source_xyz
+    picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white_impl(
+        [x, y, z],
+        treat_display_linear_one_as_hdr203_white,
+    )
+}
+
+/// Analyze a prepared scene-linear ACES2065-1/AP0 sample. The AP0-to-ACEScg
+/// matrix is applied directly: no display-linear multiplier, inverse view
+/// transform, or RGB clamp is involved. The existing ACEScg-to-J′/x′/y′ solve
+/// remains authoritative for coordinate availability.
+///
+/// Return layout: [valid coordinates, ACEScg R/G/B, J′, x′, y′].
+#[wasm_bindgen]
+pub fn picker_analyze_scene_ap0(red: f64, green: f64, blue: f64) -> Vec<f64> {
+    let ap0 = [red, green, blue];
+    let acescg = aces_output::ap0_to_acescg(ap0);
+    let code = if finite3(ap0) && finite3(acescg) {
+        let xyz = aces_output::forward_from_ap0(0, ap0);
+        picker_code_from_forward_xyz(acescg, xyz)
     } else {
-        source_xyz.map(|value| value / SOURCE_SCALE)
+        vec![0.0, f64::NAN, f64::NAN, f64::NAN]
     };
-    let (code, domain_valid) =
-        scaled_jhk_from_xyz_with_tolerance(normalized_xyz, PICKER_J_PEAK, 1.0e-4);
-    if !domain_valid {
-        return vec![0.0; 3];
-    }
-    appearance_acescg(code, true)
-        .map(|value| view_rgb(view, value).to_vec())
-        .unwrap_or_else(|| vec![0.0; 3])
+    let mut out = Vec::with_capacity(7);
+    out.push(code[0]);
+    out.extend(acescg);
+    out.extend_from_slice(&code[1..4]);
+    out
 }
 
+/// Convert prepared display-referred XYZ-D65 pixels to the selected view.
 #[wasm_bindgen]
-pub fn picker_display_rgb_ap0(
-    red: f64,
-    green: f64,
-    blue: f64,
-    view: u32,
-    scale203: bool,
-) -> Vec<f64> {
-    picker_display_rgb_ap0_mode(red, green, blue, view, scale203, false)
-}
-
-/// Batch appearance conversion for image previews and loupes.  The optional
-/// 2.03 multiplier belongs exclusively to this display path; callers doing
-/// image statistics should continue to use `picker_analyze_ap0` so changing
-/// the appearance toggle cannot change the sampled-color result.
-#[wasm_bindgen]
-pub fn picker_display_rgb_ap0_batch_mode(
+pub fn picker_display_rgb_xyz_d65_batch(
     pixels: &[f32],
     view: u32,
-    scale203: bool,
-    desaturate: bool,
+    treat_display_linear_one_as_hdr203_white: bool,
 ) -> Vec<f32> {
+    if pixels.len() % 3 != 0 {
+        return Vec::new();
+    }
+    let scale = if treat_display_linear_one_as_hdr203_white {
+        HDR203_DIFFUSE_WHITE_SCALE
+    } else {
+        1.0
+    };
+    let mut output = Vec::with_capacity(pixels.len());
+    for pixel in pixels.chunks_exact(3) {
+        let xyz = [
+            pixel[0] as f64 * scale,
+            pixel[1] as f64 * scale,
+            pixel[2] as f64 * scale,
+        ];
+        let acescg = aces_output::inverse_from_xyz_d65(0, xyz);
+        output.extend(view_rgb(view, acescg).into_iter().map(|v| v as f32));
+    }
+    output
+}
+
+/// Present prepared scene-linear ACES2065-1/AP0 through the selected forward
+/// ACES view. Input scene channels are matrix-converted to ACEScg without
+/// clamping before the view transform.
+#[wasm_bindgen]
+pub fn picker_display_rgb_scene_ap0_batch(pixels: &[f32], view: u32) -> Vec<f32> {
     if pixels.len() % 3 != 0 {
         return Vec::new();
     }
     let mut output = Vec::with_capacity(pixels.len());
     for pixel in pixels.chunks_exact(3) {
-        let rgb = picker_display_rgb_ap0_mode(
-            pixel[0] as f64,
-            pixel[1] as f64,
-            pixel[2] as f64,
+        let xyz = aces_output::forward_from_ap0(
             view,
-            scale203,
-            desaturate,
+            [pixel[0] as f64, pixel[1] as f64, pixel[2] as f64],
         );
-        output.extend(rgb.into_iter().map(|v| v as f32));
+        let matrix = match view {
+            0 => &XYZ_TO_REC2020,
+            2 | 4 => &XYZ_TO_P3,
+            _ => &XYZ_TO_REC709,
+        };
+        output.extend(mat(matrix, xyz).into_iter().map(|v| v as f32));
     }
     output
-}
-
-#[wasm_bindgen]
-pub fn picker_display_rgb_ap0_batch(pixels: &[f32], view: u32, scale203: bool) -> Vec<f32> {
-    picker_display_rgb_ap0_batch_mode(pixels, view, scale203, false)
 }
 
 /// Solve canonical normalized J′/x′/y′ coordinates from an averaged ACEScg
@@ -325,7 +271,11 @@ pub fn picker_display_rgb_ap0_batch(pixels: &[f32], view: u32, scale203: bool) -
 pub fn picker_code_from_acescg(red: f64, green: f64, blue: f64) -> Vec<f64> {
     let acescg = [red, green, blue];
     let xyz = aces_output::forward(0, acescg);
-    let source_xyz = xyz.map(|v| v / SOURCE_SCALE);
+    picker_code_from_forward_xyz(acescg, xyz)
+}
+
+fn picker_code_from_forward_xyz(acescg: [f64; 3], xyz: [f64; 3]) -> Vec<f64> {
+    let source_xyz = xyz.map(|v| v / HDR203_DIFFUSE_WHITE_SCALE);
     let source_rgb = mat(&XYZ_TO_REC2020, source_xyz);
     let (code, domain_valid) = scaled_jhk_from_xyz(source_xyz, PICKER_J_PEAK);
     let valid = finite3(acescg) && finite3(xyz) && domain_valid && source_valid(source_rgb);
@@ -389,8 +339,8 @@ pub fn picker_render_rows(
 /// Render selected-view display-linear RGB for one Cartesian slice row range.
 ///
 /// Each pixel is `[R, G, B, valid]`. This is the deterministic fallback for
-/// the WebGPU slice renderer and follows the same fixed authoring pipeline as
-/// [`picker_evaluate`]: modCAM16-HK -> Rec.2020-D65 authoring linear -> fixed inverse
+/// the WebGPU slice renderer and follows the same fixed Rec.2020 authoring pipeline as
+/// [`picker_evaluate`]: modCAM16-HK -> linear Rec.2020-D65 authoring RGB -> fixed inverse
 /// fixed Rec.2020 ACES 2.0 inverse -> selected forward ACES 2.0 view.
 #[wasm_bindgen]
 pub fn picker_render_linear_rows_mode(
@@ -401,7 +351,6 @@ pub fn picker_render_linear_rows_mode(
     y_start: u32,
     y_end: u32,
     full_rec2020: bool,
-    desaturate: bool,
 ) -> Vec<f32> {
     let width = width.max(1) as usize;
     let height = height.max(1) as usize;
@@ -423,9 +372,7 @@ pub fn picker_render_linear_rows_mode(
             let sample = source_sample_mode([j, sx, sy], full_rec2020);
             let index = ((y - start) * width + x) * 4;
             if sample.valid {
-                let rgb = appearance_acescg([j, sx, sy], desaturate)
-                    .map(|value| view_rgb(view, value))
-                    .unwrap_or([0.0; 3]);
+                let rgb = view_rgb(view, sample.acescg);
                 output[index] = rgb[0] as f32;
                 output[index + 1] = rgb[1] as f32;
                 output[index + 2] = rgb[2] as f32;
@@ -445,7 +392,7 @@ pub fn picker_render_linear_rows(
     y_start: u32,
     y_end: u32,
 ) -> Vec<f32> {
-    picker_render_linear_rows_mode(view, j, width, height, y_start, y_end, true, false)
+    picker_render_linear_rows_mode(view, j, width, height, y_start, y_end, true)
 }
 
 /// ACES fixed-function parameters and reach/cusp tables for the WGSL slice
@@ -459,21 +406,22 @@ pub fn picker_gpu_parameters() -> Vec<f32> {
 /// Fixed 18 seven-float records: canonical J'/x'/y', selected-view display
 /// linear RGB for the dot fill, and always-available.
 #[wasm_bindgen]
-pub fn picker_colorchecker_mode(view: u32, desaturate: bool) -> Vec<f64> {
+pub fn picker_colorchecker_mode(view: u32) -> Vec<f64> {
     let mut output = Vec::with_capacity(126);
     for lab in COLORCHECKER_LAB_D50 {
         let scene = mat(
             &XYZ_D65_TO_ACESCG,
             mat(&D50_TO_D65_CAT02, lab_d50_to_xyz(lab)),
         );
-        let xyz = aces_output::forward(0, scene).map(|v| v / SOURCE_SCALE);
+        let xyz = aces_output::forward(0, scene).map(|v| v / HDR203_DIFFUSE_WHITE_SCALE);
         let (code, _domain_valid) = scaled_jhk_from_xyz(xyz, PICKER_J_PEAK);
         output.extend(code);
-        output.extend(
-            appearance_acescg(code, desaturate)
-                .map(|value| view_rgb(view, value))
-                .unwrap_or([0.0; 3]),
-        );
+        let sample = source_sample_mode(code, true);
+        output.extend(if sample.valid {
+            view_rgb(view, sample.acescg)
+        } else {
+            [0.0; 3]
+        });
         output.push(1.0);
     }
     output
@@ -487,7 +435,7 @@ pub fn picker_colorchecker() -> Vec<f64> {
             &XYZ_D65_TO_ACESCG,
             mat(&D50_TO_D65_CAT02, lab_d50_to_xyz(lab)),
         );
-        let xyz = aces_output::forward(0, scene).map(|v| v / SOURCE_SCALE);
+        let xyz = aces_output::forward(0, scene).map(|v| v / HDR203_DIFFUSE_WHITE_SCALE);
         let (code, domain_valid) = scaled_jhk_from_xyz(xyz, PICKER_J_PEAK);
         output.extend(code);
         output.extend(display_xyz_f64(xyz, &XYZ_TO_P3));
@@ -546,8 +494,8 @@ mod tests {
     }
 
     #[test]
-    fn authoring_validity_uses_rec2020_instead_of_p3() {
-        let sample = source_sample([0.2, 0.21, 0.53]);
+    fn rec2020_authoring_validity_uses_rec2020_instead_of_p3() {
+        let sample = source_sample([0.12, 0.35, 0.1875]);
         let p3 = mat(&XYZ_TO_P3, sample.xyz);
         let rec2020 = mat(&XYZ_TO_REC2020, sample.xyz);
         assert!(min3(p3) < -1.0e-4, "sample should be outside P3: {p3:?}");
@@ -566,14 +514,14 @@ mod tests {
     }
 
     #[test]
-    fn full_off_requires_the_p3_authoring_cube() {
-        let code = [0.2, 0.21, 0.53];
-        let full = picker_evaluate_mode(0, code[0], code[1], code[2], 0.0, true, false);
-        let restricted = picker_evaluate_mode(0, code[0], code[1], code[2], 0.0, false, false);
+    fn full_off_requires_p3_containment_for_limited_rec2020_authoring() {
+        let code = [0.12, 0.35, 0.1875];
+        let full = picker_evaluate_mode(0, code[0], code[1], code[2], 0.0, true);
+        let restricted = picker_evaluate_mode(0, code[0], code[1], code[2], 0.0, false);
         assert_eq!(full[0], 1.0);
         assert_eq!(restricted[0], 0.0);
 
-        let above_p3_peak = [0.61, 0.97, 0.59];
+        let above_p3_peak = [0.624, 0.9125, 0.55];
         let sample = source_sample(above_p3_peak);
         let p3 = mat(&XYZ_TO_P3, sample.xyz);
         assert!(
@@ -581,7 +529,7 @@ mod tests {
             "sample must remain valid in full Rec.2020 mode"
         );
         assert!(
-            min3(p3) >= 0.0 && max3(p3) > SOURCE_PEAK,
+            min3(p3) >= 0.0 && max3(p3) > AUTHORING_REC2020_PEAK,
             "expected P3 upper-cube violation: {p3:?}"
         );
         let restricted = picker_evaluate_mode(
@@ -591,49 +539,17 @@ mod tests {
             above_p3_peak[2],
             0.0,
             false,
-            false,
         );
         assert_eq!(restricted[0], 0.0);
 
-        let neutral = picker_evaluate_mode(0, 0.8, 0.5, 0.5, 0.0, false, false);
+        let neutral = picker_evaluate_mode(0, 0.8, 0.5, 0.5, 0.0, false);
         assert_eq!(neutral[0], 1.0);
         assert!(neutral[23..26].iter().all(|value| *value > 1.0));
     }
 
     #[test]
-    fn desaturation_changes_appearance_but_not_canonical_results() {
-        let normal = picker_evaluate_mode(0, 0.38, 0.72, 0.63, 0.15, true, false);
-        let desaturated = picker_evaluate_mode(0, 0.38, 0.72, 0.63, 0.15, true, true);
-        assert_eq!(&normal[..26], &desaturated[..26]);
-        assert_eq!(&normal[29..], &desaturated[29..]);
-        assert!(normal[26..29]
-            .iter()
-            .zip(&desaturated[26..29])
-            .any(|(a, b)| (a - b).abs() > 1.0e-5));
-    }
-
-    #[test]
-    fn desaturation_clips_out_of_cube_intermediates_without_changing_availability() {
-        let code = picker_code_from_acescg(25.2811, 29.6013, 0.0422);
-        assert_eq!(code[0], 1.0);
-        let normal = picker_evaluate_mode(0, code[1], code[2], code[3], 0.15, true, false);
-        let desaturated = picker_evaluate_mode(0, code[1], code[2], code[3], 0.15, true, true);
-        assert_eq!(normal[0], 1.0);
-        assert_eq!(desaturated[0], 1.0);
-        assert_eq!(&normal[..26], &desaturated[..26]);
-        assert!(desaturated[26..29].iter().all(|value| value.is_finite()));
-        assert!(desaturated[26..29].iter().any(|value| value.abs() > 1.0e-9));
-
-        let source = source_sample([code[1], code[2], code[3]]);
-        let ap0 = mat(&XYZ_D65_TO_AP0, source.xyz);
-        let image = picker_display_rgb_ap0_mode(ap0[0], ap0[1], ap0[2], 0, true, true);
-        assert!(image.iter().all(|value| value.is_finite()));
-        assert!(image.iter().any(|value| value.abs() > 1.0e-9));
-    }
-
-    #[test]
     fn colorchecker_mode_retains_every_patch() {
-        let points = picker_colorchecker_mode(0, true);
+        let points = picker_colorchecker_mode(0);
         assert_eq!(points.len(), 18 * 7);
         assert!(points.chunks_exact(7).all(|record| {
             record[6] == 1.0
@@ -643,68 +559,121 @@ mod tests {
     }
 
     #[test]
-    fn desaturation_preserves_the_cpu_slice_availability_mask() {
-        let normal = picker_render_linear_rows_mode(0, 0.9999989, 65, 65, 0, 65, true, false);
-        let desaturated = picker_render_linear_rows_mode(0, 0.9999989, 65, 65, 0, 65, true, true);
-        assert_eq!(normal.len(), desaturated.len());
-        for index in (3..normal.len()).step_by(4) {
-            assert_eq!(normal[index], desaturated[index], "alpha index {index}");
-        }
-    }
-
-    #[test]
-    fn image_scale_changes_display_only_and_not_canonical_analysis() {
-        let ap0 = [0.18, 0.07, 0.03];
-        let analysis = picker_analyze_ap0(ap0[0], ap0[1], ap0[2]);
-        let scaled_analysis = picker_analyze_ap0_scaled(ap0[0], ap0[1], ap0[2], true);
-        assert_eq!(analysis, scaled_analysis);
-        assert_eq!(
-            analysis,
-            picker_analyze_ap0_scaled(ap0[0], ap0[1], ap0[2], true)
+    fn image_unit_interpretation_preserves_physical_analysis() {
+        let xyz = mat(&REC2020_TO_XYZ, [0.18, 0.07, 0.03]);
+        let checked_analysis = picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
+            xyz[0], xyz[1], xyz[2], true,
         );
-        // The two flags describe different raster units.  Feeding the
-        // corresponding physical representations must recover the same
-        // canonical color (the raw AP0 value above is the checked 203-nit
-        // representation; the unchecked representation is divided by 2.03).
-        let unscaled_physical = ap0.map(|v| v * SOURCE_SCALE);
-        let unscaled_physical_analysis = picker_analyze_ap0_scaled(
-            unscaled_physical[0],
-            unscaled_physical[1],
-            unscaled_physical[2],
+        assert_eq!(checked_analysis[0], 1.0);
+        // The checked representation declares display-linear 1.0 as the
+        // 203-nit diffuse white. The unchecked representation stores the
+        // same physical color in 100-nit units, so its channels are 2.03x.
+        let unchecked_physical = xyz.map(|v| v * HDR203_DIFFUSE_WHITE_SCALE);
+        let unchecked_analysis = picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
+            unchecked_physical[0],
+            unchecked_physical[1],
+            unchecked_physical[2],
             false,
         );
         for i in 1..7 {
             assert!(
-                (scaled_analysis[i] - unscaled_physical_analysis[i]).abs() < 2.0e-8,
+                (checked_analysis[i] - unchecked_analysis[i]).abs() < 2.0e-8,
                 "analysis channel {i}: {} vs {}",
-                scaled_analysis[i],
-                unscaled_physical_analysis[i]
+                checked_analysis[i],
+                unchecked_analysis[i]
             );
         }
-        assert_eq!(analysis, scaled_analysis);
-        let scaled = picker_display_rgb_ap0(ap0[0], ap0[1], ap0[2], 4, true);
-        let unscaled = picker_display_rgb_ap0(ap0[0], ap0[1], ap0[2], 4, false);
-        assert!(scaled
+        let checked_display = picker_display_rgb_xyz_d65_batch(
+            &[xyz[0] as f32, xyz[1] as f32, xyz[2] as f32],
+            4,
+            true,
+        );
+        let same_values_without_multiplier = picker_display_rgb_xyz_d65_batch(
+            &[xyz[0] as f32, xyz[1] as f32, xyz[2] as f32],
+            4,
+            false,
+        );
+        assert!(checked_display
             .iter()
-            .zip(unscaled.iter())
+            .zip(same_values_without_multiplier.iter())
             .any(|(a, b)| (a - b).abs() > 1.0e-6));
+        let unchecked_display = picker_display_rgb_xyz_d65_batch(
+            &unchecked_physical.map(|value| value as f32),
+            4,
+            false,
+        );
+        for channel in 0..3 {
+            assert!(
+                (checked_display[channel] - unchecked_display[channel]).abs() < 2.0e-6,
+                "display channel {channel}: {} vs {}",
+                checked_display[channel],
+                unchecked_display[channel]
+            );
+        }
     }
 
     #[test]
-    fn unchecked_hdr_white_is_valid_but_above_peak_is_rejected() {
-        // AP0 encoding of absolute Rec.2020 white at the HDR 1000-nit peak. The
-        // unchecked raster uses absolute 100-nit units, so 10.0 is the valid
-        // upper bound rather than the legacy 10/2.03 source-unit bound.
+    fn scene_ap0_analysis_preserves_unclamped_acescg() {
+        let expected = [1.4, -0.2, 0.25];
+        let ap0 = aces_output::acescg_to_ap0(expected);
+        let analysis = picker_analyze_scene_ap0(ap0[0], ap0[1], ap0[2]);
+        assert_eq!(
+            analysis[0], 1.0,
+            "this signed scene sample remains representable"
+        );
+        for channel in 0..3 {
+            assert!(
+                (analysis[channel + 1] - expected[channel]).abs() < 2.0e-12,
+                "scene channel {channel}: {} vs {}",
+                analysis[channel + 1],
+                expected[channel]
+            );
+        }
+    }
+
+    #[test]
+    fn scene_ap0_display_uses_the_forward_view_directly() {
+        let scene = [0.31, 0.12, 0.04];
+        let ap0 = aces_output::acescg_to_ap0(scene);
+        for view in [0, 1, 2, 4] {
+            let actual = picker_display_rgb_scene_ap0_batch(
+                &[ap0[0] as f32, ap0[1] as f32, ap0[2] as f32],
+                view,
+            );
+            let expected = view_rgb(view, scene);
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] as f64 - expected[channel]).abs() < 2.0e-6,
+                    "view {view} channel {channel}: {} vs {}",
+                    actual[channel],
+                    expected[channel]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unchecked_unit_white_is_valid_but_above_peak_is_rejected() {
+        // The unchecked raster uses 100-nit units, so 10.0 is its valid upper
+        // bound; the checked representation has the 10/2.03 bound.
         let rec2020_white = [10.0; 3];
-        let ap0_white = mat(&XYZ_D65_TO_AP0, mat(&REC2020_TO_XYZ, rec2020_white));
-        let valid = picker_analyze_ap0_scaled(ap0_white[0], ap0_white[1], ap0_white[2], false);
+        let xyz_white = mat(&REC2020_TO_XYZ, rec2020_white);
+        let valid = picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
+            xyz_white[0],
+            xyz_white[1],
+            xyz_white[2],
+            false,
+        );
         assert_eq!(valid[0], 1.0);
-        // The decomposition path stores AP0 as f32.  This rounded white
-        // models the small matrix/PQ boundary error seen in prepared PNGs.
-        let rounded = picker_analyze_ap0_scaled(9.999999, 10.0, 9.999999, false);
+        let rounded_xyz = xyz_white.map(|value| value as f32 as f64);
+        let rounded = picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
+            rounded_xyz[0], rounded_xyz[1], rounded_xyz[2], false,
+        );
         assert_eq!(rounded[0], 1.0);
-        let above = ap0_white.map(|v| v * 1.001);
-        let invalid = picker_analyze_ap0_scaled(above[0], above[1], above[2], false);
+        let above = xyz_white.map(|v| v * 1.001);
+        let invalid = picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
+            above[0], above[1], above[2], false,
+        );
         assert_eq!(invalid[0], 0.0);
     }
 

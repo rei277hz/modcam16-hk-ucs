@@ -68,6 +68,16 @@ const ACESCG_TO_AP0: [[f64; 3]; 3] = [
     ],
 ];
 
+/// Convert scene-linear ACES2065-1/AP0 to scene-linear ACEScg/AP1 without
+/// imposing the output-transform inverse's source-domain clamp.
+pub(crate) fn ap0_to_acescg(ap0: [f64; 3]) -> [f64; 3] {
+    mat(&AP0_TO_ACESCG, ap0)
+}
+
+pub(crate) fn acescg_to_ap0(acescg: [f64; 3]) -> [f64; 3] {
+    mat(&ACESCG_TO_AP0, acescg)
+}
+
 const RGB_TO_LMS_SDR: [[f64; 3]; 3] = [
     [0.223405808, 0.451332718, 0.118962049],
     [0.108193472, 0.547473967, 0.138033181],
@@ -699,25 +709,22 @@ fn jmh_to_target_rgb(jmh: [f64; 3], p: Parameters) -> [f64; 3] {
     mat(&p.jmh_to_target_rgb, lms)
 }
 
-/// Apply the exact ACES 2.0 inverse output fixed function and return ACEScg.
-pub fn inverse(profile: u32, xyz: [f64; 3]) -> [f64; 3] {
+/// Apply the exact ACES 2.0 inverse output fixed function to display-referred
+/// CIE XYZ-D65 and return ACEScg.
+pub fn inverse_from_xyz_d65(profile: u32, xyz: [f64; 3]) -> [f64; 3] {
     let p = parameters(profile);
     let rgb = clamp3(mat(&p.xyz_to_rgb, xyz), 0.0, p.input_max);
     let jmh = rgb_to_jmh(rgb, p);
     let jmh = gamut_compress_inverse_ocio(jmh, p);
     let jmh = chroma_inverse(jmh, p);
     let ap0 = jmh_to_ap0(jmh);
-    clamp3(mat(&AP0_TO_ACESCG, ap0), 0.0, p.output_max)
+    clamp3(ap0_to_acescg(ap0), 0.0, p.output_max)
 }
 
-/// Apply the exact ACES 2.0 forward output fixed function from ACEScg to XYZ.
-pub fn forward(profile: u32, acescg: [f64; 3]) -> [f64; 3] {
+/// Apply the exact ACES 2.0 forward output fixed function from its native
+/// ACES2065-1/AP0 scene-reference boundary to display-referred XYZ-D65.
+pub fn forward_from_ap0(profile: u32, ap0: [f64; 3]) -> [f64; 3] {
     let p = parameters(profile);
-    // The official ACEScg -> ACES2065-1 group processor does not insert a
-    // range operation between its matrix and ACES_OutputTransform20. Keep
-    // negative AP0 components intact; the fixed function's signed response
-    // handling is part of the reference behavior for saturated colors.
-    let ap0 = mat(&ACESCG_TO_AP0, acescg);
     let jmh = rgb_to_jmh_with_matrix(ap0, &AP0_TO_LMS);
     let chroma = chroma_forward(jmh, p);
     let compressed = gamut_compress_forward(chroma, chroma[0], reach_sample(jmh[2], p), p);
@@ -725,6 +732,13 @@ pub fn forward(profile: u32, acescg: [f64; 3]) -> [f64; 3] {
     // function, before the target RGB-to-XYZ matrix.
     let target_rgb = clamp3(jmh_to_target_rgb(compressed, p), 0.0, p.input_max);
     mat(&p.target_to_xyz, target_rgb)
+}
+
+/// Apply the exact ACES 2.0 forward output group processor from ACEScg/AP1.
+/// The sole AP1→AP0 conversion occurs here before entering the native AP0
+/// fixed-function boundary; no range operation is inserted between them.
+pub fn forward(profile: u32, acescg: [f64; 3]) -> [f64; 3] {
+    forward_from_ap0(profile, acescg_to_ap0(acescg))
 }
 
 /// Flatten the exact ACES 2.0 profile parameters and OCIO-derived lookup

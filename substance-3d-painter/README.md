@@ -27,18 +27,20 @@ import either file as a `Color LUT`.
 Base Color and Emissive encode
 `(J', -R(s) sin(h), R(s) cos(h))` around 0.5.
 
-The normalized 1000-nit scale is
-`J_HK = J' * 217.2768649129496`; the 203-nit reference white is
-`J' = 0.4602422813863053`. The deployed logarithmic radius is calculated to
-contain the Rec.2020-derived `s_max = 203.64174424420062` while preserving
-smooth linear interpolation:
-
 `R(s) = log1p(s / 5.977038579617132) / 3.557365336640551`.
 
-The inverse shader decode is
-`s = 5.977038579617132 * expm1(3.557365336640551 * R)`.
-The shader applies CAT16 white adaptation and the ACES 2.0 HDR 1000-nit
-Rec.2020 inverse to produce scene-linear ACEScg.
+The inverse mapping is `s = 5.977038579617132 * expm1(3.557365336640551 * R)`.
+The constants are calculated to contain the Rec.2020 pure-blue endpoint
+`s_max = 203.64174424420062` at `R = 1`, while preserving smooth logarithmic
+interpolation. The browser CPU/WASM and WebGPU implementations use the same
+equations.
+
+The normalized 1000-nit scale is
+`J_HK = J' * 217.2768649129496`; the 203-nit reference white is
+`J' = 0.4602422813863053`. Decoded display-linear XYZ value 1.0 represents that
+203-nit diffuse white, so the shader multiplies decoded XYZ by 2.03 before
+CAT16 white adaptation and the ACES 2.0 HDR 1000-nit Rec.2020 inverse that
+produces scene-linear ACEScg.
 
 Out-of-range or non-finite resources fail closed with the shader's diagnostic
 colors. A valid zero `J'` remains black.
@@ -54,10 +56,9 @@ sentinel array comes from the generated OCIO GLSL source. The bundled
 configuration used for extraction.
 
 The numerical oracle is PyOpenColorIO's CPU processor for the corresponding
-official ACES `BuiltinTransform`. A previous cusp-index investigation found
-that the sentinel convention requires advancing the stored lower index; the
-checked-in shader contains that correction and the validation harness
-regresses a hue near 98.94 degrees against the OCIO oracle.
+official ACES `BuiltinTransform`. The cusp sentinel convention advances the
+stored lower index. The validation harness checks a hue near 98.94 degrees
+against the OCIO oracle.
 
 ## Regenerate and validate
 

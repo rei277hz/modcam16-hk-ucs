@@ -1,18 +1,21 @@
 import "./style.css";
 import { VIEW_IDS, VIEW_NAMES, type ViewId } from "./preview_png";
+import type { ImageSourceMode } from "./slice_webgpu";
 import {
+  BACKGROUND_J_SNAP_DISTANCE,
   J_REFERENCE_WHITE,
   J_SNAP_DISTANCE,
   PATCH_ENTRY_RADIUS,
-  ROLLING_BALL_SENSITIVITY,
+  TRACK_SENSITIVITY,
   canvasPoint,
   clamp01,
   nearestJSnapTarget,
+  nearestBackgroundJSnapTarget,
   nearestSnapTarget,
-  rollingBallAcceleration,
-  rollingBallDelta,
-  rollingBallVelocity,
-  rollingWheelDelta,
+  trackMotionAcceleration,
+  trackpadDelta,
+  trackMotionVelocity,
+  trackwheelDelta,
   projectSnapCode,
   slicePoint,
   covarianceEllipse,
@@ -65,7 +68,6 @@ type RenderResponse = {
   j: number;
   renderer: "webgpu" | "wasm";
   fullRec2020: boolean;
-  desaturate: boolean;
   png: Uint8Array<ArrayBuffer>;
 };
 type EvaluateResponse = {
@@ -77,7 +79,6 @@ type EvaluateResponse = {
   fittedRadiusY: number;
   backgroundJ: number;
   fullRec2020: boolean;
-  desaturate: boolean;
   values: Float64Array;
 };
 type PreviewResponse = Omit<EvaluateResponse, "kind" | "values"> & {
@@ -87,7 +88,6 @@ type ColorCheckerResponse = {
   kind: "colorchecker";
   id: number;
   profile: number;
-  desaturate: boolean;
   points: Float64Array;
   png: Uint8Array<ArrayBuffer>;
 };
@@ -107,27 +107,34 @@ type WorkerError = {
 const $ = <T extends Element>(selector: string) =>
   document.querySelector<T>(selector)!;
 const checkerboard = $("#gamut-checkerboard") as HTMLCanvasElement;
+const appShell = $(".app-shell") as HTMLElement;
 const gamutSliceImage = $("#gamut-slice") as HTMLImageElement;
 const gamutColorcheckerImage = $("#gamut-colorchecker") as HTMLImageElement;
 const indicators = $("#gamut-indicators") as HTMLCanvasElement;
-const plotFrame = $(".plot-frame") as HTMLElement;
+const colorTrackpad = $(".color-trackpad") as HTMLElement;
+const sliceOptions = $(".slice-options") as HTMLElement;
 const plotStatus = $("#plot-status") as HTMLElement;
 const viewMenu = $("#view-menu") as HTMLElement;
 const viewButtons = Array.from(viewMenu.querySelectorAll<HTMLButtonElement>("[data-view]"));
 const previewStatus = $("#preview-status") as HTMLElement;
-const jWheel = $("#j-wheel") as HTMLElement;
-const jWheelRoller = $(".j-wheel-roller") as HTMLElement;
+const jTrackwheel = $("#j-trackwheel") as HTMLElement;
+const jTrackwheelBody = $(".j-trackwheel-body") as HTMLElement;
+const jTrackwheelTexture = $(".j-trackwheel-texture") as HTMLElement;
 const jReferenceTick = $("#j-reference-tick") as HTMLElement;
 const jCurrentIndicator = $("#j-current-indicator") as HTMLElement;
 const jNumber = $("#j-number") as HTMLInputElement;
+const xNumber = $("#x-number") as HTMLInputElement;
+const yNumber = $("#y-number") as HTMLInputElement;
+const sliceCoordinateInputs = $(".slice-coordinate-inputs") as HTMLElement;
 const backgroundStick = $("#background-stick") as HTMLElement;
 const preview = $("#preview") as HTMLButtonElement;
 let previewImage = $("#preview-image") as HTMLImageElement;
 const linearValue = $("#linear-value") as HTMLElement;
+const encodedLabel = $("#encoded-label") as HTMLElement;
 const encodedValue = $("#encoded-value") as HTMLInputElement;
 const copyValue = $("#copy-value") as HTMLButtonElement;
 const setValue = $("#set-value") as HTMLButtonElement;
-const checkerName = $("#colorchecker-name") as HTMLElement;
+const colorName = $("#color-name") as HTMLElement;
 const jStick = $("#j-stick") as HTMLElement;
 const jImageStick = $("#j-image-stick") as HTMLElement;
 const imageFileInput = $("#image-file-input") as HTMLInputElement;
@@ -140,7 +147,9 @@ const imageStatus = $("#image-status") as HTMLElement;
 const imageTransformBanner = $("#image-transform-banner") as HTMLElement;
 const imageGamutSelect = $("#image-gamut") as HTMLSelectElement;
 const imageTransferSelect = $("#image-transfer") as HTMLSelectElement;
-const imageScale203 = $("#image-scale-203") as HTMLInputElement;
+const imageHdr203WhiteControl = $("#image-treat-display-linear-one-as-hdr203-white") as HTMLInputElement;
+const imageHdr203WhiteHelp = $("#image-units-help") as HTMLElement;
+const imageUnitsField = $(".image-units-field") as HTMLElement;
 const imageGamutField = $("#image-gamut-field") as HTMLElement;
 const imageTransferField = $("#image-transfer-field") as HTMLElement;
 const imageStats = $("#image-stats") as HTMLElement;
@@ -151,7 +160,13 @@ const imageOptionsClose = $("#image-options-close") as HTMLButtonElement;
 const imageInterpretationWarning = $("#image-interpretation-warning") as HTMLElement;
 const imageZoomButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-image-zoom]"));
 const fullRec2020Toggle = $("#full-rec2020-toggle") as HTMLButtonElement;
-const desaturateToggle = $("#desaturate-toggle") as HTMLButtonElement;
+
+// Keep toggle gestures from reaching the gamut viewport's placement/drag
+// handlers while preserving normal button click and keyboard behavior.
+sliceOptions.addEventListener("pointerdown", event => event.stopPropagation());
+sliceOptions.addEventListener("pointermove", event => event.stopPropagation());
+sliceCoordinateInputs.addEventListener("pointerdown", event => event.stopPropagation());
+sliceCoordinateInputs.addEventListener("pointermove", event => event.stopPropagation());
 
 function canvasContext(target: HTMLCanvasElement): CanvasRenderingContext2D {
   try {
@@ -187,7 +202,6 @@ let currentRender:
       width: number;
       height: number;
       fullRec2020: boolean;
-      desaturate: boolean;
     }
   | undefined;
 let currentPatches: Patch[] = [];
@@ -208,41 +222,42 @@ let imageAnalysis: ImageAnalysis | null = null;
 let activeAxis: "j" | "xy" | null = null;
 let code: Code = { j: INITIAL_J, x: 0.38, y: 0.65 };
 let realCode: Code = { ...code };
-let sliceTouchPointerId: number | null = null;
-let sliceTouchLastX = 0;
-let sliceTouchLastY = 0;
-let sliceTouchLastTime = 0;
-let sliceTouchVelocityX = 0;
-let sliceTouchVelocityY = 0;
-let jWheelPointerId: number | null = null;
-let jWheelMouseTracking = false;
-let jWheelLastX = 0;
-let jWheelLastY = 0;
-let jWheelLastTime = 0;
-let jWheelVelocityX = 0;
-let jWheelVelocityY = 0;
-let jWheelTextureOffset = 0;
-let jWheelVisualHeight = 0;
-let jWheelSuppressClick = false;
-let sliceTrackingActive = false;
+let trackpadTouchPointerId: number | null = null;
+let trackpadTouchLastX = 0;
+let trackpadTouchLastY = 0;
+let trackpadTouchLastTime = 0;
+let trackpadTouchVelocityX = 0;
+let trackpadTouchVelocityY = 0;
+let jTrackwheelPointerId: number | null = null;
+let jTrackwheelSurface: "trackwheel" | "page" | null = null;
+let jTrackwheelLastX = 0;
+let jTrackwheelLastY = 0;
+let jTrackwheelLastTime = 0;
+let jTrackwheelVelocityX = 0;
+let jTrackwheelVelocityY = 0;
+let jTrackwheelTextureOffset = 0;
+let jTrackwheelVisualHeight = 0;
+let jTrackwheelSnapHeld = false;
+let jTrackwheelDeferredDeltaY = 0;
+let jTrackwheelDeferredJ = 0;
+let jTrackwheelDeferredAcceleration = 1;
+let jTrackwheelSnapTargetValue: number | null = null;
+let trackpadTrackingActive = false;
 let selectedView: ViewId = 0;
-let fullRec2020 = true;
-let desaturate = false;
+let fullRec2020 = false;
+let encodedReadoutMode: "ap1" | "jxy" = "ap1";
+let lastValidEncodedAp1 = "000000";
+let lastValidEncodedJxy = "000000";
+let lastEvaluationValid = false;
 let confirmedSliceRenderer: "unknown" | "webgpu" | "wasm" = "unknown";
 let previewUrl: string | undefined;
 let sliceUrl: string | undefined;
 let colorcheckerUrl: string | undefined;
 let pageClosed = false;
-let backgroundSnap: number | null = null;
 let backgroundJ = 0.15;
+let realBackgroundJ = 0.15;
+let backgroundSnap: ReturnType<typeof backgroundSnapTarget> = null;
 let backgroundTracking = false;
-let backgroundPointerId: number | null = null;
-let backgroundLastY = 0;
-let backgroundLastTime = 0;
-let backgroundVelocityX = 0;
-let backgroundVelocityY = 0;
-let backgroundMoved = false;
-let backgroundSuppressClick = false;
 let latestValueResponseId = 0;
 let latestPreviewResponseId = 0;
 let previewDecodeActive = false;
@@ -262,17 +277,16 @@ type ImageWorkerRequest = {
   gamut?: string | null;
   transfer?: string | null;
   view?: ViewId;
-  scale203?: boolean;
-  desaturate?: boolean;
+  treatDisplayLinearOneAsHdr203White?: boolean;
   x?: number;
   y?: number;
   radius?: number;
 };
 type ImageWorkerMessage =
   | { kind: "inspect"; id: number; generation: number; summary: any }
-  | { kind: "ready"; id: number; generation: number; width: number; height: number; previewWidth: number; previewHeight: number; summary: any; png: ArrayBuffer; view: ViewId; scale203: boolean; desaturate: boolean; renderer: "webgpu" | "wasm" }
-  | { kind: "preview"; id: number; generation: number; appearanceToken: number; width: number; height: number; previewWidth: number; previewHeight: number; png: ArrayBuffer; view: ViewId; scale203: boolean; desaturate: boolean; renderer: "webgpu" | "wasm" }
-  | { kind: "sample"; id: number; generation: number; token: number; x: number; y: number; minX: number; minY: number; width: number; height: number; loupe: ArrayBuffer; points: Array<{ j: number; x: number; y: number }>; mean: Code; meanAcescg: [number, number, number]; meanCode: Float64Array; rejected: number; total: number; view: ViewId; scale203: boolean; desaturate: boolean }
+  | { kind: "ready"; id: number; generation: number; width: number; height: number; previewWidth: number; previewHeight: number; summary: any; png: ArrayBuffer; view: ViewId; sourceMode: ImageSourceMode; treatDisplayLinearOneAsHdr203White: boolean; renderer: "webgpu" | "wasm" }
+  | { kind: "preview"; id: number; generation: number; appearanceToken: number; width: number; height: number; previewWidth: number; previewHeight: number; png: ArrayBuffer; view: ViewId; sourceMode: ImageSourceMode; treatDisplayLinearOneAsHdr203White: boolean; renderer: "webgpu" | "wasm" }
+  | { kind: "sample"; id: number; generation: number; token: number; x: number; y: number; minX: number; minY: number; width: number; height: number; loupe: ArrayBuffer; points: Array<{ j: number; x: number; y: number }>; mean: Code; meanAcescg: [number, number, number]; meanCode: Float64Array; rejected: number; total: number; view: ViewId; sourceMode: ImageSourceMode; treatDisplayLinearOneAsHdr203White: boolean }
   | { kind: "error"; id: number; generation?: number; message: string };
 const imageWorker = new Worker(new URL("./image_locator_worker.ts", import.meta.url), { type: "module" });
 let imageRequestId = 0;
@@ -281,8 +295,9 @@ let imageFile: File | undefined;
 let imageFormat = "";
 let imageSummary: any;
 let imagePrepared = false;
-let imageScaleBy203 = true;
-let imageScaleUserChanged = false;
+let imageSourceMode: ImageSourceMode = "display-linear-xyz-d65";
+let treatDisplayLinearOneAsHdr203White = false;
+let imageUnitsUserChanged = false;
 let imageWidth = 0;
 let imageHeight = 0;
 let imagePreviewUrl: string | undefined;
@@ -305,7 +320,7 @@ let imagePointerLockFallback = false;
 let imageOptionsFocusPending = false;
 let imageAppearanceToken = 0;
 let pendingImageAppearance:
-  | { token: number; view: ViewId; scale203: boolean; desaturate: boolean; previewReady: boolean; sampleToken?: number; loupeReady: boolean }
+  | { token: number; view: ViewId; sourceMode: ImageSourceMode; treatDisplayLinearOneAsHdr203White: boolean; previewReady: boolean; sampleToken?: number; loupeReady: boolean }
   | undefined;
 
 function finite(value: number, fallback = 0) {
@@ -318,14 +333,13 @@ function currentRealCode(): Code {
   return { ...realCode };
 }
 function currentProfile(): ViewId { return selectedView; }
-function effectiveDesaturate() { return fullRec2020 && desaturate; }
 function requestedSliceSize() {
   return activeAxis === "j" && confirmedSliceRenderer === "wasm"
     ? PREVIEW
     : FULL;
 }
 function stateKey(code = currentCode(), size = requestedSliceSize()) {
-  return `${selectedView}:${Number(fullRec2020)}:${Number(effectiveDesaturate())}:${size}:${code.j.toFixed(12)}`;
+  return `${selectedView}:${Number(fullRec2020)}:${size}:${code.j.toFixed(12)}`;
 }
 function formatRgb(values: ArrayLike<number>) {
   return `(${Array.from(values, (value) => (Number.isFinite(value) ? value.toFixed(4) : "nan")).join(", ")})`;
@@ -339,6 +353,23 @@ function encodeHex(values: ArrayLike<number>) {
     .join("")
     .toUpperCase();
 }
+function encodeSrgbChannel(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  const clamped = clamp01(value);
+  return clamped <= 0.0031308
+    ? 12.92 * clamped
+    : 1.055 * clamped ** (1 / 2.4) - 0.055;
+}
+function decodeSrgbChannel(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  const clamped = clamp01(value);
+  return clamped <= 0.04045
+    ? clamped / 12.92
+    : ((clamped + 0.055) / 1.055) ** 2.4;
+}
+function encodeJxyHex(values: ArrayLike<number>) {
+  return encodeHex(Array.from(values, encodeSrgbChannel));
+}
 function decodeHex(value: string): [number, number, number] | undefined {
   const match = /^([0-9a-f]{6})$/i.exec(value.trim());
   if (!match) return undefined;
@@ -348,36 +379,96 @@ function decodeHex(value: string): [number, number, number] | undefined {
     parseInt(match[1].slice(4, 6), 16) / 255,
   ];
 }
+function decodeJxyHex(value: string) {
+  const encoded = decodeHex(value);
+  return encoded?.map(decodeSrgbChannel) as [number, number, number] | undefined;
+}
+function renderEncodedLabel() {
+  const source = encodedReadoutMode === "ap1" ? "AP1" : "J′x′y′";
+  const target = encodedReadoutMode === "ap1" ? "J′x′y′" : "AP1";
+  const targetMode = encodedReadoutMode === "ap1" ? "jxy" : "ap1";
+  const targetId = encodedReadoutMode === "ap1" ? "encoded-label-jxy" : "encoded-label-ap1";
+  const switchButton = document.createElement("button");
+  switchButton.type = "button";
+  switchButton.id = targetId;
+  switchButton.className = "encoded-label-link";
+  switchButton.dataset.encodedMode = targetMode;
+  switchButton.textContent = target;
+  switchButton.setAttribute("aria-label", `Show sRGB Encoded ${target}`);
+  encodedLabel.replaceChildren(
+    document.createTextNode("sRGB Encoded "),
+    document.createTextNode(source),
+    document.createTextNode(" (→ "),
+    switchButton,
+    document.createTextNode(")"),
+  );
+}
+function currentEncodedHex() {
+  return encodedReadoutMode === "ap1" ? lastValidEncodedAp1 : lastValidEncodedJxy;
+}
+function updateEncodedReadout(values?: ArrayLike<number>, valid = false) {
+  if (valid && values) {
+    lastValidEncodedAp1 = encodeHex(Array.from(values).slice(10, 13));
+    lastValidEncodedJxy = encodeJxyHex(Array.from(values).slice(20, 23));
+  }
+  if (document.activeElement !== encodedValue) encodedValue.value = currentEncodedHex();
+  const modeName = encodedReadoutMode === "ap1" ? "AP1" : "normalized J′x′y′";
+  encodedValue.title = valid
+    ? `sRGB-transfer encoded scene-linear ${modeName}`
+    : `Last valid encoded ${modeName}; the current pick is unavailable`;
+  encodedValue.setAttribute("aria-label", `Six sRGB Encoded ${encodedReadoutMode === "ap1" ? "ACEScg AP1" : "J′x′y′"} hexadecimal digits`);
+}
 function currentBackgroundJ() {
   return backgroundJ;
 }
-function updateBackground() {
+function backgroundSnapTarget() {
+  return nearestBackgroundJSnapTarget(
+    realBackgroundJ,
+    code.j,
+    J_REFERENCE_WHITE,
+    BACKGROUND_J_SNAP_DISTANCE,
+  );
+}
+function updateBackground(projectSnap = false, clearSnap = false) {
+  if (clearSnap) backgroundSnap = null;
+  if (projectSnap) {
+    backgroundSnap = backgroundSnapTarget();
+    backgroundJ = backgroundSnap ? backgroundSnap.value : realBackgroundJ;
+  }
   backgroundStick.hidden = false;
   backgroundStick.style.bottom = `${clamp01(backgroundJ) * 100}%`;
   backgroundStick.title = `Background J′ ${backgroundJ.toFixed(3)}`;
+  backgroundStick.dataset.realValue = realBackgroundJ.toFixed(6);
+  backgroundStick.dataset.displayValue = backgroundJ.toFixed(6);
+  backgroundStick.dataset.snapTarget = backgroundSnap?.kind ?? "none";
+  backgroundStick.dataset.snapValue = backgroundSnap ? backgroundSnap.value.toFixed(6) : "";
 }
-function updateJWheelVisual() {
-  const height = jWheel.getBoundingClientRect().height || 1;
-  if (jWheelVisualHeight > 0 && Math.abs(height - jWheelVisualHeight) > 0.01)
-    jWheelTextureOffset *= height / jWheelVisualHeight;
-  jWheelVisualHeight = height;
-  // The wheel is a free physical surface. Its texture phase records raw
-  // pointer travel and is deliberately independent of accelerated/snapped J'.
-  jWheelRoller.style.backgroundPositionY = `${jWheelTextureOffset}px`;
-  jWheel.dataset.realValue = realCode.j.toFixed(6);
+function updateJTrackwheelVisual() {
+  const height = jTrackwheel.getBoundingClientRect().height || 1;
+  if (jTrackwheelVisualHeight > 0 && Math.abs(height - jTrackwheelVisualHeight) > 0.01)
+    jTrackwheelTextureOffset *= height / jTrackwheelVisualHeight;
+  jTrackwheelVisualHeight = height;
+  // The trackwheel is a free physical surface. Its texture phase records raw
+  // pointer travel and is deliberately independent of accelerated/snapped J'
+  // except while a captured snap temporarily freezes the visible phase.
+  // Overscan the trackwheel texture by half a tick period so the repeating pattern is
+  // continuous through both clipped trackwheel edges instead of exposing a
+  // partial end mark.  The phase remains the raw one-pixel pointer travel.
+  jTrackwheelTexture.style.backgroundPositionY = `${jTrackwheelTextureOffset + 4}px`;
+  jTrackwheel.dataset.realValue = realCode.j.toFixed(6);
   // Keep enough precision for resize reconstruction and diagnostics; the
   // texture itself remains sub-pixel precise in CSS.
-  jWheel.dataset.visualOffset = jWheelTextureOffset.toFixed(9);
+  jTrackwheel.dataset.visualOffset = jTrackwheelTextureOffset.toFixed(9);
 }
 function updatePlotLabel() {
-  const interaction = sliceTrackingActive
+  const interaction = trackpadTrackingActive
     ? " mouse tracking active;"
-    : sliceTouchPointerId !== null
+    : trackpadTouchPointerId !== null
       ? " touch or pen gesture active;"
       : ";";
-  plotFrame.setAttribute(
+  colorTrackpad.setAttribute(
     "aria-label",
-    `Gamut slice${interaction} x' ${code.x.toFixed(6)}, y' ${code.y.toFixed(6)}`,
+    `Color trackpad${interaction} x’ ${code.x.toFixed(6)}, y’ ${code.y.toFixed(6)}`,
   );
 }
 function setDisplayedCode(next: Code) {
@@ -387,18 +478,22 @@ function setDisplayedCode(next: Code) {
     y: clamp01(next.y),
   };
   updatePlotLabel();
-  jWheel.setAttribute("aria-valuenow", code.j.toString());
-  jWheel.setAttribute("aria-valuetext", code.j.toFixed(3));
-  jWheel.dataset.value = code.j.toFixed(6);
+  jTrackwheel.setAttribute("aria-valuenow", code.j.toString());
+  jTrackwheel.setAttribute("aria-valuetext", code.j.toFixed(3));
+  jTrackwheel.dataset.value = code.j.toFixed(6);
   if (document.activeElement !== jNumber) jNumber.value = code.j.toFixed(3);
+  if (document.activeElement !== xNumber) xNumber.value = code.x.toFixed(3);
+  if (document.activeElement !== yNumber) yNumber.value = code.y.toFixed(3);
   jCurrentIndicator.style.bottom = `${code.j * 100}%`;
-  plotFrame.dataset.realJ = realCode.j.toFixed(6);
-  plotFrame.dataset.realX = realCode.x.toFixed(6);
-  plotFrame.dataset.realY = realCode.y.toFixed(6);
-  plotFrame.dataset.displayJ = code.j.toFixed(6);
-  plotFrame.dataset.displayX = code.x.toFixed(6);
-  plotFrame.dataset.displayY = code.y.toFixed(6);
-  updateJWheelVisual();
+  colorTrackpad.dataset.realJ = realCode.j.toFixed(6);
+  colorTrackpad.dataset.realX = realCode.x.toFixed(6);
+  colorTrackpad.dataset.realY = realCode.y.toFixed(6);
+  colorTrackpad.dataset.displayJ = code.j.toFixed(6);
+  colorTrackpad.dataset.displayX = code.x.toFixed(6);
+  colorTrackpad.dataset.displayY = code.y.toFixed(6);
+  // Foreground changes must never re-project a retained Background snap.
+  updateBackground(false, true);
+  updateJTrackwheelVisual();
   drawIndicators();
 }
 function setRealCode(axis: keyof Code, value: number) {
@@ -489,12 +584,12 @@ function drawIndicators() {
     const [ax, ay] = point(imageAverage.x, imageAverage.y);
     drawCircle(indicatorContext, ax, ay, PATCH_ENTRY_RADIUS * scale, "rgb(255 203 93 / 96%)", 2);
   }
-  plotFrame.dataset.indicatorPatchCount = String(currentPatches.length);
+  colorTrackpad.dataset.indicatorPatchCount = String(currentPatches.length);
   indicatorContext.restore();
 }
 function invalidatePendingSet() {
   // A hex import must not overwrite newer pointer or Background input.
-  // Advancing the request token makes an eventual worker response obsolete.
+  // Advancing the request token marks an eventual worker response as stale.
   setId += 1;
 }
 function updatePatchLocators() {
@@ -506,11 +601,13 @@ function updatePatchLocators() {
   jImageStick.hidden = imageAverage === null;
   if (imageAverage) jImageStick.style.bottom = `${imageAverage.j * 100}%`;
   jCurrentIndicator.style.bottom = `${code.j * 100}%`;
-  checkerName.classList.toggle("is-hidden", !patch);
-  checkerName.setAttribute("aria-hidden", String(!patch));
-  checkerName.textContent = patch?.name ?? "";
+  const pickedColor = !patch && activeTarget?.kind === "average";
+  colorName.classList.toggle("is-hidden", !patch && !pickedColor);
+  colorName.classList.toggle("picked-color", pickedColor);
+  colorName.setAttribute("aria-hidden", String(!patch && !pickedColor));
+  colorName.textContent = patch?.name ?? (pickedColor ? "Avg. Sampled Color" : "");
 }
-function updatePatchCandidate(applySnap = true) {
+function updatePatchCandidate(applySnap = true, allowJSnap = false) {
   const real = currentRealCode();
   const patchPoints = currentPatches.map((patch) => ({ x: patch.x, y: patch.y }));
   const candidate = nearestSnapTarget(real.x, real.y, patchPoints, { x: 0.5, y: 0.5 }, imageAverage ? { x: imageAverage.x, y: imageAverage.y } : undefined);
@@ -534,7 +631,7 @@ function updatePatchCandidate(applySnap = true) {
     activePatch = null;
     activeTarget = null;
   }
-  plotFrame.dataset.snapTarget =
+  colorTrackpad.dataset.snapTarget =
     activeTarget?.kind === "patch"
       ? `patch:${activeTarget.index}`
       : activeTarget?.kind ?? "none";
@@ -545,9 +642,10 @@ function updatePatchCandidate(applySnap = true) {
     J_SNAP_DISTANCE,
     imageAverage?.j,
   );
-  plotFrame.dataset.jSnapTarget = jTarget?.kind ?? "none";
-  plotFrame.dataset.colorcheckerRingCount = String(currentPatches.length);
+  colorTrackpad.dataset.jSnapTarget = jTarget?.kind ?? "none";
+  colorTrackpad.dataset.colorcheckerRingCount = String(currentPatches.length);
   updatePatchLocators();
+  let jSnapValue: number | null = null;
   if (applySnap) {
     const projected = projectSnapCode(
       real,
@@ -556,38 +654,39 @@ function updatePatchCandidate(applySnap = true) {
       activeAxis,
       code,
       imageAverage?.j,
+      allowJSnap,
     );
+    if (allowJSnap && jTarget && Math.abs(projected.j - real.j) > 1e-12)
+      jSnapValue = jTarget.value;
     setDisplayedCode(projected);
   }
+  return jSnapValue;
 }
 function displayValues(values: Float64Array) {
   const valid = values[0] > 0.5;
+  lastEvaluationValid = valid;
   linearValue.textContent = valid ? formatRgb(values.slice(1, 4)) : "Unavailable";
-  if (valid && document.activeElement !== encodedValue)
-    encodedValue.value = encodeHex(values.slice(10, 13));
-  encodedValue.title = valid ? "sRGB-transfer encoded scene-linear AP1" : "Last valid encoded AP1; the current pick is unavailable";
+  updateEncodedReadout(values, valid);
   preview.classList.toggle("preview-unavailable", !valid);
-  // While the replacement PNG is being encoded/decoded, do not leave a
-  // previous valid swatch visible behind the unavailable diagnostic cross.
-  // displayPreview() changes this to "invalid" once the black diagnostic PNG
-  // is ready, or to "valid" for a normal replacement.
+  // Keep the last decoded PNG visible while the replacement is encoded and
+  // decoded. The invalid-state diagnostic cross is embedded in that PNG.
   preview.dataset.previewReady = "pending";
   preview.dataset.valid = String(valid);
   preview.setAttribute("aria-label", `${valid ? "Picked color" : "Out-of-gamut color"}; ${VIEW_NAMES[selectedView]}. Choose view transform`);
-  backgroundSnap = finite(values[19], 0);
   updateBackground();
 }
 function evaluationIsCurrent(response: EvaluateResponse | PreviewResponse) {
   return !pageClosed && response.id === evaluationId && response.profile === selectedView &&
-    response.fullRec2020 === fullRec2020 && response.desaturate === effectiveDesaturate() &&
+    response.fullRec2020 === fullRec2020 &&
     response.j === code.j && response.fittedRadiusX === code.x && response.fittedRadiusY === code.y &&
     Math.abs(response.backgroundJ - currentBackgroundJ()) < 1e-12;
 }
 function responseBelongsToCurrentView(response: EvaluateResponse | PreviewResponse) {
   return !pageClosed && response.profile === selectedView &&
-    response.fullRec2020 === fullRec2020 && response.desaturate === effectiveDesaturate();
+    response.fullRec2020 === fullRec2020;
 }
 function responseMayAdvanceDuringGesture(response: EvaluateResponse | PreviewResponse) {
+  if (jTrackwheelSnapHeld) return false;
   return responseBelongsToCurrentView(response) &&
     (activeAxis !== null || backgroundTracking || evaluationIsCurrent(response));
 }
@@ -642,9 +741,17 @@ function queuePreview(response: PreviewResponse) {
 }
 async function displaySlice(response: RenderResponse, key: string) {
   if (!currentRender || currentRender.id !== response.id) return;
+  if (jTrackwheelSnapHeld) {
+    // A render may finish while the J' snap hold deliberately freezes the
+    // visible slice. Release ownership so the first post-hold schedule can
+    // request the current J' again.
+    currentRender = undefined;
+    colorTrackpad.setAttribute("aria-busy", "true");
+    return;
+  }
   const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
   const nextImage = new Image(response.width, response.height);
-  nextImage.alt = "J', x', and y' gamut slice";
+  nextImage.alt = "J’, x’, and y’ gamut slice";
   nextImage.src = url;
   try {
     await nextImage.decode();
@@ -652,11 +759,18 @@ async function displaySlice(response: RenderResponse, key: string) {
       URL.revokeObjectURL(url);
       return;
     }
+    if (jTrackwheelSnapHeld) {
+      // The hold may have started while the replacement image was decoding.
+      // Keep the displayed PNG visible and release ownership for the next schedule.
+      currentRender = undefined;
+      colorTrackpad.setAttribute("aria-busy", "true");
+      URL.revokeObjectURL(url);
+      return;
+    }
     const mayAdvanceGesture = activeAxis === "j";
     const exactState = stateKey(currentCode(), response.width) === key;
     const settledSize = requestedSliceSize();
     if (pageClosed || response.profile !== selectedView || response.fullRec2020 !== fullRec2020 ||
-      response.desaturate !== effectiveDesaturate() ||
       (!mayAdvanceGesture && (!exactState || response.width !== settledSize))) {
       URL.revokeObjectURL(url);
       currentRender = undefined;
@@ -668,17 +782,16 @@ async function displaySlice(response: RenderResponse, key: string) {
     gamutSliceImage.dataset.renderer = response.renderer;
     gamutSliceImage.dataset.view = String(response.profile);
     gamutSliceImage.dataset.fullRec2020 = String(response.fullRec2020);
-    gamutSliceImage.dataset.desaturate = String(response.desaturate);
     gamutSliceImage.dataset.imageGeneration = String(response.id);
     gamutSliceImage.dataset.imageCode = JSON.stringify([response.j]);
     if (response.renderer === "webgpu") confirmedSliceRenderer = "webgpu";
     else if (confirmedSliceRenderer === "unknown") confirmedSliceRenderer = "wasm";
-    plotFrame.dataset.sliceRenderer = confirmedSliceRenderer;
+    colorTrackpad.dataset.sliceRenderer = confirmedSliceRenderer;
     sliceUrl = url;
     sliceSize = response.width;
     imageKey = key;
     currentRender = undefined;
-    plotFrame.setAttribute("aria-busy", "false");
+    colorTrackpad.setAttribute("aria-busy", "false");
     plotStatus.hidden = true;
     if (previousUrl) URL.revokeObjectURL(previousUrl);
     requestRender();
@@ -686,10 +799,11 @@ async function displaySlice(response: RenderResponse, key: string) {
     URL.revokeObjectURL(url);
     if (currentRender?.id === response.id) {
       currentRender = undefined;
-      plotFrame.setAttribute("aria-busy", "false");
+      imageKey = "";
+      colorTrackpad.setAttribute("aria-busy", "false");
       plotStatus.textContent = "Slice image could not be decoded; previous image retained.";
       plotStatus.hidden = false;
-      if (stateKey() !== key) requestRender();
+      if (!pageClosed) requestRender();
     }
   }
 }
@@ -705,7 +819,6 @@ function requestEvaluate() {
     fittedRadiusY: code.y,
     backgroundJ: currentBackgroundJ(),
     fullRec2020,
-    desaturate: effectiveDesaturate(),
   });
 }
 function requestRender() {
@@ -715,13 +828,23 @@ function requestRender() {
   if (imageKey === key && sliceSize === size) {
     return;
   }
-  plotFrame.setAttribute("aria-busy", "true");
-  // Keep one slice frame in flight. Pointer updates merely change the latest
-  // desired state; displaySlice() requests that state after this frame lands.
-  // This avoids starvation when fast gestures previously cancelled every job.
-  if (currentRender) return;
+  colorTrackpad.setAttribute("aria-busy", "true");
+  // Keep one current-key slice frame in flight. If the desired key changed,
+  // release stale ownership before posting the replacement; otherwise a
+  // stale response discarded during a gesture could block the latest request.
+  if (currentRender) {
+    if (currentRender.key === key && currentRender.profile === selectedView &&
+        currentRender.width === size && currentRender.fullRec2020 === fullRec2020)
+      return;
+    // During a live J' gesture, let the worker finish one frame and let
+    // displaySlice() enqueue the newest key afterward. Cancelling every
+    // pointer sample starves the worker under rapid movement.
+    if (activeAxis === "j") return;
+    sliceWorker.postMessage({ kind: "cancel-render", id: currentRender.id });
+    currentRender = undefined;
+  }
   const id = ++renderId;
-  currentRender = { id, key, profile: selectedView, j: code.j, width: size, height: size, fullRec2020, desaturate: effectiveDesaturate() };
+  currentRender = { id, key, profile: selectedView, j: code.j, width: size, height: size, fullRec2020 };
   sliceWorker.postMessage({
     kind: "render",
     id,
@@ -730,7 +853,6 @@ function requestRender() {
     width: size,
     height: size,
     fullRec2020,
-    desaturate: effectiveDesaturate(),
   });
 }
 function schedule() {
@@ -769,9 +891,9 @@ function requestPatches(reset = false) {
     currentPatches = [];
     activePatch = null;
     activeTarget = null;
-    plotFrame.dataset.snapTarget = "none";
-    plotFrame.dataset.jSnapTarget = "none";
-    plotFrame.dataset.colorcheckerRingCount = "0";
+    colorTrackpad.dataset.snapTarget = "none";
+    colorTrackpad.dataset.jSnapTarget = "none";
+    colorTrackpad.dataset.colorcheckerRingCount = "0";
     updatePatchLocators();
   }
   const id = ++checkerId;
@@ -779,25 +901,23 @@ function requestPatches(reset = false) {
     kind: "colorchecker",
     id,
     profile: selectedView,
-    desaturate: effectiveDesaturate(),
   });
 }
 
 async function displayColorchecker(response: ColorCheckerResponse) {
-  if (response.id !== checkerId || response.profile !== selectedView || response.desaturate !== effectiveDesaturate()) return;
+  if (response.id !== checkerId || response.profile !== selectedView) return;
   const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
   const decoded = new Image(1024, 1024);
   decoded.src = url;
   try {
     await decoded.decode();
-    if (response.id !== checkerId || response.profile !== selectedView || response.desaturate !== effectiveDesaturate()) {
+    if (response.id !== checkerId || response.profile !== selectedView) {
       URL.revokeObjectURL(url);
       return;
     }
     const previous = colorcheckerUrl;
     gamutColorcheckerImage.src = url;
     gamutColorcheckerImage.dataset.view = String(response.profile);
-    gamutColorcheckerImage.dataset.desaturate = String(response.desaturate);
     colorcheckerUrl = url;
     if (previous) URL.revokeObjectURL(previous);
   } catch {
@@ -805,8 +925,9 @@ async function displayColorchecker(response: ColorCheckerResponse) {
   }
 }
 function chooseView(view: ViewId) {
-  cancelSliceTracking();
-  finishJWheelInteraction(false);
+  cancelTrackpadTracking();
+  finishJTrackwheelInteraction(false);
+  finishPreviewDrag(false);
   if (imageTrackingActive) finishImageTracking();
   selectedView = view;
   preview.title = `${VIEW_NAMES[view]} — click to change view`;
@@ -821,24 +942,20 @@ function chooseView(view: ViewId) {
   }
 }
 
-function setAuthoringOptions(nextFull: boolean, nextDesaturate = desaturate) {
-  const previousAppearance = effectiveDesaturate();
+function setRec2020AuthoringOptions(nextFull: boolean) {
   fullRec2020 = nextFull;
-  desaturate = nextDesaturate;
-  const nextAppearance = effectiveDesaturate();
-  fullRec2020Toggle.setAttribute("aria-pressed", String(fullRec2020));
-  desaturateToggle.disabled = !fullRec2020;
-  desaturateToggle.setAttribute("aria-pressed", String(desaturate));
+  fullRec2020Toggle.textContent = fullRec2020 ? "Rec.2020" : "Rec.2020 (P3-D65 Limited)";
+  fullRec2020Toggle.title = fullRec2020
+    ? "Using full Rec.2020 authoring; click for P3-D65-limited Rec.2020"
+    : "Using P3-D65-limited Rec.2020 authoring; click for full Rec.2020";
+  fullRec2020Toggle.setAttribute("aria-label", fullRec2020
+    ? "Rec.2020; click to switch to P3-D65-limited Rec.2020"
+    : "Rec.2020 (P3-D65 Limited); click to switch to full Rec.2020");
   imageKey = "";
   currentRender = undefined;
-  if (previousAppearance !== nextAppearance) requestPatches();
   schedule();
-  if (imagePrepared && previousAppearance !== nextAppearance) { requestImagePreview(); requestImageSample(); }
 }
-fullRec2020Toggle.addEventListener("click", () => setAuthoringOptions(!fullRec2020));
-desaturateToggle.addEventListener("click", () => {
-  if (fullRec2020) setAuthoringOptions(true, !desaturate);
-});
+fullRec2020Toggle.addEventListener("click", () => setRec2020AuthoringOptions(!fullRec2020));
 function closeViewMenu(restoreFocus = false) {
   viewMenu.hidden = true;
   preview.setAttribute("aria-expanded", "false");
@@ -855,8 +972,9 @@ function openViewMenu() {
   viewButtons.find(button => Number(button.dataset.view) === selectedView)?.focus({ preventScroll: true });
 }
 function setFromHex() {
-  cancelSliceTracking();
-  finishJWheelInteraction(false);
+  cancelTrackpadTracking();
+  finishJTrackwheelInteraction(false);
+  finishPreviewDrag(false);
   const decoded = decodeHex(encodedValue.value);
   if (!decoded) {
     encodedValue.setCustomValidity("Enter exactly six hexadecimal digits.");
@@ -864,6 +982,21 @@ function setFromHex() {
     return;
   }
   encodedValue.setCustomValidity("");
+  if (encodedReadoutMode === "jxy") {
+    // J′x′y′ mode edits the normalized Rec.2020-authored coordinates directly. The
+    // inverse sRGB transfer recovers each channel before clamping to the
+    // picker domain; this path intentionally does not create a snap target.
+    const coordinates = decodeJxyHex(encodedValue.value);
+    if (!coordinates) return;
+    invalidatePendingSet();
+    realCode = { j: coordinates[0], x: coordinates[1], y: coordinates[2] };
+    setAllCode(realCode);
+    activePatch = null;
+    activeTarget = null;
+    updatePatchLocators();
+    schedule();
+    return;
+  }
   const id = ++setId;
   evaluatorWorker.postMessage({
     kind: "set",
@@ -883,8 +1016,7 @@ function imageSetStatus(message: string, error = false) {
 
 function clearImageLoupe() {
   imageLoupe.removeAttribute("src");
-  imageLoupe.alt = "Pixel loupe";
-  imageLoupe.style.display = "none";
+  imageLoupe.alt = "";
   if (imageLoupeUrl) URL.revokeObjectURL(imageLoupeUrl);
   imageLoupeUrl = undefined;
 }
@@ -899,8 +1031,7 @@ function setImageTransformBusy(busy: boolean) {
 
 function finishImageAppearanceIfReady() {
   const pending = pendingImageAppearance;
-  if (pending?.view === selectedView && pending.scale203 === imageScaleBy203 &&
-    pending.desaturate === effectiveDesaturate() &&
+  if (pending?.view === selectedView && pending.sourceMode === imageSourceMode && pending.treatDisplayLinearOneAsHdr203White === treatDisplayLinearOneAsHdr203White &&
     pending.previewReady && pending.loupeReady) setImageTransformBusy(false);
 }
 
@@ -915,31 +1046,88 @@ function detectImageFormat(file: File): string | undefined {
   return undefined;
 }
 
-function defaultImageScale203(format: string, summary?: any): boolean {
+function defaultTreatDisplayLinearOneAsHdr203White(format: string, summary?: any): boolean {
   const normalizedFormat = String(summary?.format ?? format).toLowerCase();
-  if (normalizedFormat === "dng" || normalizedFormat === "exr") return false;
+  // Display-linear EXR commonly treats 1.0 as the working diffuse white, while
+  // DNG, gain-map output, PQ, and HLG preparation retain 100-nit units where
+  // 2.03 represents 203 nits. Scene-reference ACES EXR bypasses this default
+  // and disables the option. Other SDR images default to lifting encoded white
+  // to HDR diffuse white. The checkbox value is never inverted in transit.
+  if (normalizedFormat === "exr") return true;
+  if (normalizedFormat === "dng") return true;
   if (summary?.gainmap_confirmed) return false;
   const transfer = String(summary?.transfer ?? "").toLowerCase();
-  // PQ and HLG sources already carry an HDR display-referred scale.  Do not
-  // apply the SDR-to-HDR 2.03 lift unless the user explicitly opts in.
   if (transfer.includes("pq") || transfer.includes("hlg")) return false;
   return true;
 }
 
-function syncImageScaleDefault() {
-  if (imageScaleUserChanged) return;
+function requestedImageSourceMode(): ImageSourceMode {
+  const format = String(imageSummary?.format ?? imageFormat).toLowerCase();
+  if (format === "dng") return "display-linear-xyz-d65";
+  if (format !== "exr") return "display-linear-xyz-d65";
+  const gamut = imageGamutSelect.value === "embedded"
+    ? String(imageSummary?.gamut ?? "")
+    : imageGamutSelect.value;
+  return gamut === "ACEScg" || gamut === "ACES2065-1"
+    ? "scene-reference-aces"
+    : "display-linear-xyz-d65";
+}
+
+function updateImageUnitsHelp() {
+  const dng = String(imageSummary?.format ?? imageFormat).toLowerCase() === "dng";
+  const sceneReference = requestedImageSourceMode() === "scene-reference-aces";
+  imageHdr203WhiteControl.disabled = sceneReference || dng;
+  imageUnitsField.setAttribute("aria-disabled", String(sceneReference || dng));
+  if (dng) {
+    treatDisplayLinearOneAsHdr203White = true;
+    imageHdr203WhiteControl.checked = true;
+    imageHdr203WhiteHelp.textContent = "RAW/DNG camera white uses the fixed 203-nit workflow. Multiply by 2.03 before the inverse view transform.";
+    return;
+  }
+  if (sceneReference) {
+    imageHdr203WhiteHelp.textContent = "Scene-reference ACES data goes directly through the selected view transform; no multiplier or inverse view transform is applied.";
+    return;
+  }
+  imageHdr203WhiteHelp.textContent = imageHdr203WhiteControl.checked
+    ? "Multiply by 2.03 before the inverse view transform."
+    : "No multiplier will be applied.";
+}
+
+function syncImageUnitsDefault() {
+  if (String(imageSummary?.format ?? imageFormat).toLowerCase() === "dng") {
+    treatDisplayLinearOneAsHdr203White = true;
+    imageHdr203WhiteControl.checked = true;
+    updateImageUnitsHelp();
+    return;
+  }
+  if (requestedImageSourceMode() === "scene-reference-aces") {
+    updateImageUnitsHelp();
+    return;
+  }
+  if (imageUnitsUserChanged) {
+    updateImageUnitsHelp();
+    return;
+  }
   const selectedTransfer = imageGamutSelect.value === "embedded"
     ? imageSummary?.transfer
     : imageTransferSelect.value;
-  imageScaleBy203 = defaultImageScale203(imageFormat, { ...imageSummary, transfer: selectedTransfer });
-  imageScale203.checked = imageScaleBy203;
+  treatDisplayLinearOneAsHdr203White = defaultTreatDisplayLinearOneAsHdr203White(
+    imageFormat,
+    { ...imageSummary, transfer: selectedTransfer },
+  );
+  imageHdr203WhiteControl.checked = treatDisplayLinearOneAsHdr203White;
+  updateImageUnitsHelp();
 }
 
 function imageSetControlVisibility(summary: any) {
   const isDng = String(summary?.format ?? imageFormat).toLowerCase() === "dng";
+  const isExr = String(summary?.format ?? imageFormat).toLowerCase() === "exr";
+  const manualSceneAces = isExr && imageGamutSelect.value !== "embedded" &&
+    (imageGamutSelect.value === "ACEScg" || imageGamutSelect.value === "ACES2065-1");
+  if (manualSceneAces) imageTransferSelect.value = "Linear";
   imageGamutField.hidden = isDng;
   imageTransferField.hidden = isDng || imageGamutSelect.value === "embedded";
-  imageTransferSelect.disabled = isDng || imageGamutSelect.value === "embedded";
+  imageTransferSelect.disabled = isDng || imageGamutSelect.value === "embedded" || manualSceneAces;
   const embedded = Boolean(summary?.embedded_available ?? summary?.automatic_icc);
   const option = imageGamutSelect.querySelector<HTMLOptionElement>('option[value="embedded"]');
   if (option) {
@@ -948,7 +1136,16 @@ function imageSetControlVisibility(summary: any) {
       ? `Use embedded ${String(summary.metadata_source).replace(/^(PNG|JPEG|HEIF|EXR)\s+/i, "")}`
       : "Use embedded interpretation";
   }
-  if (!embedded && !isDng) {
+  // ACEScg/AP0 are scene-reference encodings, not display RGB primaries.
+  // Keep those choices available only for EXR sources where the scene path is
+  // well-defined; ordinary raster/HEIF sources must use an RGB→XYZ-D65 adapter.
+  for (const value of ["ACEScg", "ACES2065-1"]) {
+    const acesOption = imageGamutSelect.querySelector<HTMLOptionElement>(`option[value="${value}"]`);
+    if (acesOption) acesOption.disabled = !isExr;
+  }
+  // Apply the no-profile sRGB fallback only on initial inspection.  A later
+  // Primaries change must never overwrite the user's manual selection.
+  if (!embedded && !isDng && (imageGamutSelect.value === "embedded" || !imageGamutSelect.value)) {
     imageGamutSelect.value = "Rec.709 / sRGB";
     imageTransferSelect.value = "sRGB";
     imageInterpretationWarning.hidden = false;
@@ -977,12 +1174,18 @@ function imageRequestPrepare() {
   imagePrepared = false;
   setImageTransformBusy(true);
   if (imageTrackingActive) finishImageTracking();
-  // A new interpretation changes every sampled AP0 value.  Drop the old
+  // A new interpretation changes every sampled XYZ-D65 value. Clear the
   // statistics and average snap target immediately; the pointer location is
   // retained and sampled again when the replacement raster is ready.
   imageAnalysis = null;
   imageAverage = null;
   clearImageLoupe();
+  if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+  imagePreviewUrl = undefined;
+  imagePreview.removeAttribute("src");
+  imagePreview.alt = "";
+  imageOverlayContext.clearRect(0, 0, imageOverlay.width, imageOverlay.height);
+  imagePanel.dataset.imageState = "loading";
   imagePanel.dataset.ready = "false";
   imageViewport.dataset.ready = "false";
   updatePatchCandidate(false);
@@ -996,8 +1199,7 @@ function imageRequestPrepare() {
     gamut: embedded || String(imageSummary?.format ?? "").toLowerCase() === "dng" ? null : imageGamutSelect.value,
     transfer: embedded || String(imageSummary?.format ?? "").toLowerCase() === "dng" ? null : imageTransferSelect.value,
     view: selectedView,
-    scale203: imageScaleBy203,
-    desaturate: effectiveDesaturate(),
+    treatDisplayLinearOneAsHdr203White,
   } satisfies ImageWorkerRequest);
 }
 
@@ -1070,25 +1272,42 @@ function imageNativeToCanvas(x: number, y: number): [number, number] {
 
 function drawImageOverlay() {
   imageOverlayContext.clearRect(0, 0, imageOverlay.width, imageOverlay.height);
-  imageLoupe.style.display = imageAnalysis?.loupe ? "block" : "none";
   if (!imagePointerSet) return;
   const geometry = updateImageGeometry();
   const [px, py] = [
     geometry.crosshairX / Math.max(1, geometry.viewport.width) * imageOverlay.width,
     geometry.crosshairY / Math.max(1, geometry.viewport.height) * imageOverlay.height,
   ];
+  // The fixed 512x512 overlay is stretched to the viewport's 1.5:1 CSS
+  // rectangle. Express each dimension in its own backing-store units so the
+  // crosshair remains square and its strokes retain the same CSS width.
+  const scaleX = imageOverlay.width / Math.max(1, geometry.viewport.width);
+  const scaleY = imageOverlay.height / Math.max(1, geometry.viewport.height);
+  const armX = 18 * scaleX;
+  const gapX = 5 * scaleX;
+  const halfX = 4 * scaleX;
+  const armY = 18 * scaleY;
+  const gapY = 5 * scaleY;
+  const halfY = 4 * scaleY;
+  const horizontalStroke = 2 * scaleY;
+  const verticalStroke = 2 * scaleX;
   imageOverlayContext.save();
   imageOverlayContext.strokeStyle = "rgb(255 255 255 / 92%)";
-  imageOverlayContext.lineWidth = 2;
+  imageOverlayContext.lineWidth = horizontalStroke;
   imageOverlayContext.beginPath();
-  imageOverlayContext.moveTo(px - 18, py); imageOverlayContext.lineTo(px - 5, py);
-  imageOverlayContext.moveTo(px + 5, py); imageOverlayContext.lineTo(px + 18, py);
-  imageOverlayContext.moveTo(px, py - 18); imageOverlayContext.lineTo(px, py - 5);
-  imageOverlayContext.moveTo(px, py + 5); imageOverlayContext.lineTo(px, py + 18);
+  imageOverlayContext.moveTo(px - armX, py); imageOverlayContext.lineTo(px - gapX, py);
+  imageOverlayContext.moveTo(px + gapX, py); imageOverlayContext.lineTo(px + armX, py);
   imageOverlayContext.stroke();
-  imageOverlayContext.strokeStyle = "rgb(0 0 0 / 85%)";
-  imageOverlayContext.lineWidth = 1;
-  imageOverlayContext.strokeRect(px - 4, py - 4, 8, 8);
+  imageOverlayContext.lineWidth = verticalStroke;
+  imageOverlayContext.beginPath();
+  imageOverlayContext.moveTo(px, py - armY); imageOverlayContext.lineTo(px, py - gapY);
+  imageOverlayContext.moveTo(px, py + gapY); imageOverlayContext.lineTo(px, py + armY);
+  imageOverlayContext.stroke();
+  imageOverlayContext.fillStyle = "rgb(0 0 0 / 85%)";
+  imageOverlayContext.fillRect(px - halfX, py - halfY, 2 * halfX, scaleY);
+  imageOverlayContext.fillRect(px - halfX, py + halfY - scaleY, 2 * halfX, scaleY);
+  imageOverlayContext.fillRect(px - halfX, py - halfY, scaleX, 2 * halfY);
+  imageOverlayContext.fillRect(px + halfX - scaleX, py - halfY, scaleX, 2 * halfY);
   imageOverlayContext.restore();
 }
 
@@ -1096,19 +1315,19 @@ function requestImageSample() {
   if (!imagePrepared || !imageFile) return;
   const token = ++imageSampleToken;
   latestImageSampleToken = token;
-  if (pendingImageAppearance?.view === selectedView && pendingImageAppearance.scale203 === imageScaleBy203 && pendingImageAppearance.desaturate === effectiveDesaturate()) {
+  if (pendingImageAppearance?.view === selectedView && pendingImageAppearance.sourceMode === imageSourceMode && pendingImageAppearance.treatDisplayLinearOneAsHdr203White === treatDisplayLinearOneAsHdr203White) {
     pendingImageAppearance.sampleToken = token;
     pendingImageAppearance.loupeReady = false;
   }
-  imageWorker.postMessage({ kind: "sample", id: imageRequestId, generation: imageGeneration, token, format: imageFormat, x: imagePointerX, y: imagePointerY, radius: 3, view: selectedView, scale203: imageScaleBy203, desaturate: effectiveDesaturate() } satisfies ImageWorkerRequest);
+  imageWorker.postMessage({ kind: "sample", id: imageRequestId, generation: imageGeneration, token, format: imageFormat, x: imagePointerX, y: imagePointerY, radius: 3, view: selectedView, treatDisplayLinearOneAsHdr203White } satisfies ImageWorkerRequest);
 }
 
 function requestImagePreview() {
   if (!imagePrepared || !imageFile) return;
   const appearanceToken = ++imageAppearanceToken;
-  pendingImageAppearance = { token: appearanceToken, view: selectedView, scale203: imageScaleBy203, desaturate: effectiveDesaturate(), previewReady: false, loupeReady: false };
+  pendingImageAppearance = { token: appearanceToken, view: selectedView, sourceMode: imageSourceMode, treatDisplayLinearOneAsHdr203White, previewReady: false, loupeReady: false };
   setImageTransformBusy(true);
-  imageWorker.postMessage({ kind: "preview", id: imageRequestId, generation: imageGeneration, appearanceToken, format: imageFormat, view: selectedView, scale203: imageScaleBy203, desaturate: effectiveDesaturate() } satisfies ImageWorkerRequest);
+  imageWorker.postMessage({ kind: "preview", id: imageRequestId, generation: imageGeneration, appearanceToken, format: imageFormat, view: selectedView, treatDisplayLinearOneAsHdr203White } satisfies ImageWorkerRequest);
 }
 
 function setImagePointer(x: number, y: number, sample = true) {
@@ -1164,9 +1383,9 @@ function applyImageLockedMotion(event: MouseEvent) {
   const now = performance.now();
   const elapsed = Math.max(1, now - imageTouchLastTime);
   const dx = event.movementX || 0, dy = event.movementY || 0;
-  const velocity = rollingBallVelocity({ x: imageTouchVelocityX, y: imageTouchVelocityY }, dx, dy, imageViewport.clientWidth, imageViewport.clientHeight, elapsed);
+  const velocity = trackMotionVelocity({ x: imageTouchVelocityX, y: imageTouchVelocityY }, dx, dy, imageViewport.clientWidth, imageViewport.clientHeight, elapsed);
   imageTouchVelocityX = velocity.x; imageTouchVelocityY = velocity.y; imageTouchLastTime = now;
-  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
+  const acceleration = trackMotionAcceleration(Math.hypot(velocity.x, velocity.y));
   applyImageRelativeDelta(dx * acceleration, dy * acceleration);
 }
 
@@ -1187,7 +1406,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
     // controls must be available immediately for files without metadata.
     imagePanel.dataset.ready = "inspected";
     imageSetControlVisibility(imageSummary);
-    syncImageScaleDefault();
+    syncImageUnitsDefault();
     updateImageOptionsWarning();
     imageTransferField.hidden = String(imageSummary?.format ?? imageFormat).toLowerCase() === "dng" || imageGamutSelect.value === "embedded";
     imageSetStatus(imageInterpretationReady() ? "Preparing the native image raster…" : "Choose a source interpretation to continue.");
@@ -1196,8 +1415,10 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
   }
   if (response.kind === "ready") {
     imageWidth = response.width; imageHeight = response.height;
-    // Decode the replacement off-DOM.  Keep the previous row hidden and only
-    // expose this generation after the native pointer, geometry, and overlay
+    imageSourceMode = response.sourceMode;
+    imagePanel.dataset.sourceMode = imageSourceMode;
+    // Decode the replacement off-DOM. Keep the image row hidden and expose
+    // this generation after the native pointer, geometry, and overlay
     // have all been initialized, preventing an image-without-crosshair gap.
     const generation = imageGeneration;
     const requestId = imageRequestId;
@@ -1217,7 +1438,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       URL.revokeObjectURL(url);
       return;
     }
-    const presentationMismatch = response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate();
+    const presentationMismatch = response.view !== selectedView || response.sourceMode !== requestedImageSourceMode() || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White;
     if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
     imagePreviewUrl = url;
     imagePreview.src = imagePreviewUrl;
@@ -1227,6 +1448,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
     // handler runs to completion before the browser paints, so the ready row,
     // image, and initialized crosshair become visible as one update.
     imagePrepared = true;
+    imagePanel.dataset.imageState = "ready";
     imagePanel.dataset.ready = "true";
     imageViewport.dataset.ready = "true";
     imagePanel.hidden = false;
@@ -1234,7 +1456,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
     setImagePointer(imageWidth / 2, imageHeight / 2, false);
     updateImageGeometry();
     drawImageOverlay();
-    imageSetStatus(`${imageWidth} × ${imageHeight} native pixels ready. Click to locate a color.`);
+    imageSetStatus(`${imageWidth} × ${imageHeight} native pixels ready.`);
     setImageTransformBusy(false);
     imageStats.textContent = "Move the crosshair to inspect a 3 px neighborhood.";
     if (presentationMismatch) requestImagePreview();
@@ -1242,7 +1464,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
     return;
   }
   if (response.kind === "preview") {
-    if (!imagePrepared || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate()) return;
+    if (!imagePrepared || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.sourceMode !== imageSourceMode || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White) return;
     const generation = imageGeneration;
     const requestId = imageRequestId;
     const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
@@ -1256,7 +1478,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       imageSetStatus("Display transform could not be decoded; previous image retained.", true);
       return;
     }
-    if (generation !== imageGeneration || requestId !== imageRequestId || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate()) {
+    if (generation !== imageGeneration || requestId !== imageRequestId || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.sourceMode !== imageSourceMode || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White) {
       URL.revokeObjectURL(url);
       return;
     }
@@ -1265,7 +1487,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
     imagePreview.src = imagePreviewUrl;
     imagePreview.dataset.renderer = response.renderer;
     imagePreview.alt = `Loaded ${imageFormat.toUpperCase()} image (${imageWidth} × ${imageHeight})`;
-    if (pendingImageAppearance?.token === response.appearanceToken && pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203 && pendingImageAppearance.desaturate === response.desaturate) {
+    if (pendingImageAppearance?.token === response.appearanceToken && pendingImageAppearance.view === response.view && pendingImageAppearance.sourceMode === response.sourceMode && pendingImageAppearance.treatDisplayLinearOneAsHdr203White === response.treatDisplayLinearOneAsHdr203White) {
       pendingImageAppearance.previewReady = true;
       finishImageAppearanceIfReady();
     }
@@ -1273,7 +1495,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
   }
   if (response.kind === "sample") {
     if (response.token !== latestImageSampleToken) return;
-    if (response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate()) return;
+    if (response.view !== selectedView || response.sourceMode !== imageSourceMode || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White) return;
     imageViewport.dataset.sampleX = String(response.x);
     imageViewport.dataset.sampleY = String(response.y);
     imageViewport.dataset.sampleCount = String(response.points.length);
@@ -1290,7 +1512,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       } catch {
         URL.revokeObjectURL(url);
         if (pendingImageAppearance?.sampleToken === response.token &&
-          pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203 && pendingImageAppearance.desaturate === response.desaturate) {
+          pendingImageAppearance.view === response.view && pendingImageAppearance.sourceMode === response.sourceMode && pendingImageAppearance.treatDisplayLinearOneAsHdr203White === response.treatDisplayLinearOneAsHdr203White) {
           pendingImageAppearance.loupeReady = true;
           finishImageAppearanceIfReady();
         }
@@ -1300,13 +1522,14 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       // active blob URL alive until the next replacement; revoking it
       // immediately after decode can make Safari discard the HDR resource
       // while it is still being presented.
-      if (response.id !== imageRequestId || response.generation !== imageGeneration || response.token !== latestImageSampleToken || response.view !== selectedView || response.scale203 !== imageScaleBy203 || response.desaturate !== effectiveDesaturate() || !imagePrepared) {
+      if (response.id !== imageRequestId || response.generation !== imageGeneration || response.token !== latestImageSampleToken || response.view !== selectedView || response.sourceMode !== imageSourceMode || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White || !imagePrepared) {
         URL.revokeObjectURL(url);
         return;
       }
       const previousUrl = imageLoupeUrl;
       imageLoupe.src = url;
-      imageLoupe.alt = `Pixel loupe centered at ${response.x}, ${response.y}`;
+      const displayY = Math.max(0, imageHeight - 1 - response.y);
+      imageLoupe.alt = `Pixel loupe centered at ${response.x}, ${displayY}`;
       imageLoupeUrl = url;
       if (previousUrl) URL.revokeObjectURL(previousUrl);
       imageAnalysis = {
@@ -1316,12 +1539,13 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
         loupe: { x: response.minX, y: response.minY, width: response.width, height: response.height },
       };
       imageAverage = meanCode[0] > 0.5 ? { j: meanCode[1], x: meanCode[2], y: meanCode[3] } : null;
-      imageStats.textContent = `Center ${response.x}, ${response.y} · ${response.total} pixels sampled (${response.rejected} unavailable); mean J′ ${response.mean.j.toFixed(4)}, x′ ${response.mean.x.toFixed(4)}, y′ ${response.mean.y.toFixed(4)}`;
+      const available = response.total - response.rejected;
+      imageStats.textContent = `Center ${response.x}, ${displayY} · ${available}/${response.total} samples available`;
       updatePatchCandidate(false);
       drawIndicators();
       drawImageOverlay();
       if (pendingImageAppearance?.sampleToken === response.token &&
-        pendingImageAppearance.view === response.view && pendingImageAppearance.scale203 === response.scale203 && pendingImageAppearance.desaturate === response.desaturate) {
+        pendingImageAppearance.view === response.view && pendingImageAppearance.sourceMode === response.sourceMode && pendingImageAppearance.treatDisplayLinearOneAsHdr203White === response.treatDisplayLinearOneAsHdr203White) {
         pendingImageAppearance.loupeReady = true;
         finishImageAppearanceIfReady();
       }
@@ -1364,37 +1588,41 @@ imageFileInput.addEventListener("change", async () => {
   if (!format) { imageSetStatus("Unsupported image format. Choose DNG, EXR, JPEG, PNG, HEIC, or HEIF.", true); return; }
   imageGeneration += 1;
   imageRequestId += 1;
-  imageFile = file; imageFormat = format; imageSummary = undefined; imagePrepared = false;
+  imageFile = file; imageFormat = format; imageSummary = undefined; imagePrepared = false; imageSourceMode = "display-linear-xyz-d65";
+  imagePanel.dataset.sourceMode = imageSourceMode;
   imageOptionsButton.disabled = false;
   imagePointerSet = false; imageAnalysis = null; imageAverage = null;
   imageZoom = 2;
   imageZoomButtons.forEach(button => button.setAttribute("aria-pressed", String(button.dataset.imageZoom === "2")));
   clearImageLoupe();
   imagePanel.hidden = false; imageViewport.dataset.ready = "false";
+  imagePanel.dataset.imageState = "loading";
   imagePanel.dataset.ready = "false";
   setImageTransformBusy(false);
   imagePreview.removeAttribute("src");
-  imagePreview.alt = "Loaded source image";
+  imagePreview.alt = "";
   imageStats.textContent = "";
   updatePatchCandidate(false);
   drawIndicators();
   imageGamutSelect.value = "embedded"; imageTransferSelect.value = "sRGB";
-  imageScaleUserChanged = false;
-  imageScaleBy203 = defaultImageScale203(format);
-  imageScale203.checked = imageScaleBy203;
+  imageUnitsUserChanged = false;
+  treatDisplayLinearOneAsHdr203White = defaultTreatDisplayLinearOneAsHdr203White(format);
+  imageHdr203WhiteControl.checked = treatDisplayLinearOneAsHdr203White;
+  updateImageUnitsHelp();
   imageGamutField.hidden = true;
   imageTransferField.hidden = true;
-  imageSetStatus(`Inspecting ${file.name}…`);
+  imageSetStatus("Inspecting image…");
   try {
     const bytes = await file.arrayBuffer();
     imageWorker.postMessage({ kind: "inspect", id: imageRequestId, generation: imageGeneration, format, bytes } satisfies ImageWorkerRequest, [bytes]);
   } catch (error) { imageSetStatus(error instanceof Error ? error.message : String(error), true); }
 });
-imageGamutSelect.addEventListener("change", () => { imageSetControlVisibility(imageSummary); updateImageOptionsWarning(); syncImageScaleDefault(); if (imageInterpretationReady()) imageRequestPrepare(); });
-imageTransferSelect.addEventListener("change", () => { updateImageOptionsWarning(); syncImageScaleDefault(); if (imageInterpretationReady()) imageRequestPrepare(); });
-imageScale203.addEventListener("change", () => {
-  imageScaleUserChanged = true;
-  imageScaleBy203 = imageScale203.checked;
+imageGamutSelect.addEventListener("change", () => { imageSetControlVisibility(imageSummary); updateImageOptionsWarning(); syncImageUnitsDefault(); if (imageInterpretationReady()) imageRequestPrepare(); });
+imageTransferSelect.addEventListener("change", () => { updateImageOptionsWarning(); syncImageUnitsDefault(); if (imageInterpretationReady()) imageRequestPrepare(); });
+imageHdr203WhiteControl.addEventListener("change", () => {
+  imageUnitsUserChanged = true;
+  treatDisplayLinearOneAsHdr203White = imageHdr203WhiteControl.checked;
+  updateImageUnitsHelp();
   if (imagePrepared) {
     requestImagePreview();
     requestImageSample();
@@ -1457,9 +1685,9 @@ imageViewport.addEventListener("pointermove", event => {
   if ((event.pointerType !== "touch" && event.pointerType !== "pen") || event.pointerId !== imageTouchPointerId) return;
   const now = performance.now(); const elapsed = Math.max(1, now - imageTouchLastTime);
   const dx = event.clientX - imageTouchLastX, dy = event.clientY - imageTouchLastY;
-  const velocity = rollingBallVelocity({ x: imageTouchVelocityX, y: imageTouchVelocityY }, dx, dy, imageViewport.clientWidth, imageViewport.clientHeight, elapsed);
+  const velocity = trackMotionVelocity({ x: imageTouchVelocityX, y: imageTouchVelocityY }, dx, dy, imageViewport.clientWidth, imageViewport.clientHeight, elapsed);
   imageTouchVelocityX = velocity.x; imageTouchVelocityY = velocity.y; imageTouchLastX = event.clientX; imageTouchLastY = event.clientY; imageTouchLastTime = now;
-  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
+  const acceleration = trackMotionAcceleration(Math.hypot(velocity.x, velocity.y));
   applyImageRelativeDelta(dx * acceleration, dy * acceleration);
   event.preventDefault();
 });
@@ -1494,14 +1722,15 @@ imageViewport.addEventListener("pointercancel", event => { if (event.pointerId =
       }
       if (response.operation === "render" || response.operation === "slice") {
         currentRender = undefined;
-        plotFrame.setAttribute("aria-busy", "false");
+        imageKey = "";
+        colorTrackpad.setAttribute("aria-busy", "false");
       }
       plotStatus.hidden = false;
       plotStatus.textContent = "Color engine error";
       return;
     }
     if (response.kind === "colorchecker") {
-      if (response.id === checkerId && response.profile === selectedView && response.desaturate === effectiveDesaturate()) {
+      if (response.id === checkerId && response.profile === selectedView) {
         parsePatches(response.points);
         void displayColorchecker(response);
       }
@@ -1546,8 +1775,7 @@ imageViewport.addEventListener("pointercancel", event => { if (event.pointerId =
         response.profile !== render.profile ||
         response.width !== render.width ||
         response.height !== render.height ||
-        response.j !== render.j || response.fullRec2020 !== render.fullRec2020 ||
-        response.desaturate !== render.desaturate
+        response.j !== render.j || response.fullRec2020 !== render.fullRec2020
       )
         return;
       void displaySlice(response, render.key);
@@ -1555,139 +1783,240 @@ imageViewport.addEventListener("pointercancel", event => { if (event.pointerId =
   };
 });
 
-function jWheelEventTime(event: PointerEvent) {
+function jTrackwheelEventTime(event: PointerEvent) {
   return Number.isFinite(event.timeStamp) && event.timeStamp > 0
     ? event.timeStamp
     : performance.now();
 }
-function beginJWheelMotion(event: PointerEvent, tracking: "mouse-active" | "drag-active") {
-  jWheelLastX = event.clientX;
-  jWheelLastY = event.clientY;
-  jWheelLastTime = jWheelEventTime(event);
-  jWheelVelocityX = 0;
-  jWheelVelocityY = 0;
+function beginJTrackwheelMotion(event: PointerEvent, surface: "trackwheel" | "page" = "trackwheel") {
+  jTrackwheelLastX = event.clientX;
+  jTrackwheelLastY = event.clientY;
+  jTrackwheelLastTime = jTrackwheelEventTime(event);
+  jTrackwheelVelocityX = 0;
+  jTrackwheelVelocityY = 0;
+  jTrackwheelSnapHeld = false;
+  jTrackwheelDeferredDeltaY = 0;
+  jTrackwheelDeferredJ = realCode.j;
+  jTrackwheelDeferredAcceleration = 1;
+  jTrackwheelSnapTargetValue = null;
   activeAxis = "j";
-  jWheel.dataset.tracking = tracking;
-  jWheel.classList.add("is-tracking");
+  jTrackwheelSurface = surface;
+  jTrackwheel.dataset.tracking = "drag-active";
+  jTrackwheel.dataset.trackingSurface = surface;
+  jTrackwheelBody.classList.add("is-tracking");
+  jTrackwheel.dataset.snapHeld = "false";
+  jTrackwheel.dataset.deferredDeltaY = "0";
   jNumber.blur();
 }
-function applyJWheelMotion(event: PointerEvent) {
-  const rect = jWheel.getBoundingClientRect();
-  const deltaX = event.clientX - jWheelLastX;
-  const deltaY = event.clientY - jWheelLastY;
-  const eventTime = jWheelEventTime(event);
-  const elapsedMs = Math.max(1, eventTime - jWheelLastTime);
-  const velocity = rollingBallVelocity(
-    { x: jWheelVelocityX, y: jWheelVelocityY },
+function applyJTrackwheelMotion(event: PointerEvent) {
+  const rect = jTrackwheel.getBoundingClientRect();
+  const deltaX = event.clientX - jTrackwheelLastX;
+  const deltaY = event.clientY - jTrackwheelLastY;
+  const eventTime = jTrackwheelEventTime(event);
+  const elapsedMs = Math.max(1, eventTime - jTrackwheelLastTime);
+  const velocity = trackMotionVelocity(
+    { x: jTrackwheelVelocityX, y: jTrackwheelVelocityY },
     deltaX,
     deltaY,
     rect.height,
     rect.height,
     elapsedMs,
   );
-  jWheelVelocityX = velocity.x;
-  jWheelVelocityY = velocity.y;
-  jWheelLastX = event.clientX;
-  jWheelLastY = event.clientY;
-  jWheelLastTime = eventTime;
+  jTrackwheelVelocityX = velocity.x;
+  jTrackwheelVelocityY = velocity.y;
+  jTrackwheelLastX = event.clientX;
+  jTrackwheelLastY = event.clientY;
+  jTrackwheelLastTime = eventTime;
   if (deltaX === 0 && deltaY === 0) return;
-  jWheelTextureOffset += deltaY;
-  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
+  const acceleration = trackMotionAcceleration(Math.hypot(velocity.x, velocity.y));
+  jTrackwheelDeferredAcceleration = acceleration;
+  if (jTrackwheelSnapHeld) {
+    jTrackwheelDeferredDeltaY += deltaY;
+    jTrackwheelDeferredJ = trackwheelDelta(
+      jTrackwheelDeferredJ,
+      deltaY,
+      rect.height,
+      TRACK_SENSITIVITY,
+      acceleration,
+    );
+    jTrackwheel.dataset.deferredDeltaY = jTrackwheelDeferredDeltaY.toFixed(6);
+    if (jTrackwheelSnapTargetValue !== null &&
+        Math.abs(jTrackwheelDeferredJ - jTrackwheelSnapTargetValue) > J_SNAP_DISTANCE) {
+      // The hidden accelerated position has left the captured snap band. Make
+      // the frozen trackwheel catch up by the complete deferred pointer distance,
+      // then return to ordinary live tracking for the rest of the gesture.
+      const deferredDeltaY = jTrackwheelDeferredDeltaY;
+      invalidatePendingSet();
+      activeAxis = "j";
+      jTrackwheelTextureOffset += deferredDeltaY;
+      setRealCode("j", jTrackwheelDeferredJ);
+      const nextSnapValue = updatePatchCandidate(true, true);
+      if (nextSnapValue !== null) {
+        jTrackwheelSnapHeld = true;
+        jTrackwheelSnapTargetValue = nextSnapValue;
+        jTrackwheelDeferredJ = realCode.j;
+        jTrackwheelDeferredDeltaY = 0;
+      } else {
+        jTrackwheelSnapHeld = false;
+        jTrackwheelSnapTargetValue = null;
+        jTrackwheelDeferredJ = realCode.j;
+        jTrackwheelDeferredDeltaY = 0;
+      }
+      jTrackwheel.dataset.snapHeld = String(jTrackwheelSnapHeld);
+      jTrackwheel.dataset.deferredDeltaY = jTrackwheelDeferredDeltaY.toFixed(6);
+      schedule();
+    }
+    event.preventDefault();
+    return;
+  }
+  jTrackwheelTextureOffset += deltaY;
   invalidatePendingSet();
   activeAxis = "j";
   setRealCode(
     "j",
-    rollingWheelDelta(
+    trackwheelDelta(
       realCode.j,
       deltaY,
       rect.height,
-      ROLLING_BALL_SENSITIVITY,
+      TRACK_SENSITIVITY,
       acceleration,
     ),
   );
-  updatePatchCandidate();
+  // J′ snapping is meaningful only when the trackwheel actually changes J′. A
+  // horizontal-only pointer move contributes to acceleration but must not
+  // project a nearby ruler target. Numeric, keyboard, and programmatic
+  // updates intentionally pass the default false.
+  const snapValue = updatePatchCandidate(true, deltaY !== 0);
+  if (snapValue !== null) {
+    jTrackwheelSnapHeld = true;
+    jTrackwheelSnapTargetValue = snapValue;
+    jTrackwheelDeferredJ = realCode.j;
+    jTrackwheel.dataset.snapHeld = "true";
+  }
   schedule();
   event.preventDefault();
 }
-function finishJWheelInteraction(scheduleFinal = true) {
-  const wasActive = jWheelMouseTracking || jWheelPointerId !== null;
-  const capturedPointer = jWheelPointerId;
+function finishJTrackwheelInteraction(scheduleFinal = true) {
+  const capturedPointer = jTrackwheelPointerId;
+  const surface = jTrackwheelSurface;
+  const wasActive = capturedPointer !== null;
+  if (wasActive && jTrackwheelSnapHeld && jTrackwheelSnapTargetValue !== null) {
+    // Releasing inside the captured snap band commits the value the user can
+    // see. Deferred travel exists only to detect an in-gesture escape; it must
+    // not produce a second trackwheel/value jump after the pointer is released.
+    invalidatePendingSet();
+    activeAxis = "j";
+    setRealCode("j", jTrackwheelSnapTargetValue);
+    setDisplayedCode({ ...code, j: jTrackwheelSnapTargetValue });
+  }
+  jTrackwheelPointerId = null;
+  jTrackwheelSurface = null;
   if (capturedPointer !== null) {
     try {
-      if (jWheel.hasPointerCapture?.(capturedPointer))
-        jWheel.releasePointerCapture(capturedPointer);
+      if (surface === "page" && appShell.hasPointerCapture?.(capturedPointer))
+        appShell.releasePointerCapture(capturedPointer);
+      else if (surface === "trackwheel" && jTrackwheelBody.hasPointerCapture?.(capturedPointer))
+        jTrackwheelBody.releasePointerCapture(capturedPointer);
     } catch {
       // Synthetic events and browsers without active capture may have no capture.
     }
   }
-  jWheelMouseTracking = false;
-  jWheelPointerId = null;
-  jWheelVelocityX = 0;
-  jWheelVelocityY = 0;
-  jWheelLastTime = 0;
-  jWheel.dataset.tracking = "idle";
-  jWheel.classList.remove("is-tracking");
+  jTrackwheelVelocityX = 0;
+  jTrackwheelVelocityY = 0;
+  jTrackwheelLastTime = 0;
+  jTrackwheelSnapHeld = false;
+  jTrackwheelDeferredDeltaY = 0;
+  jTrackwheelDeferredJ = realCode.j;
+  jTrackwheelDeferredAcceleration = 1;
+  jTrackwheelSnapTargetValue = null;
+  jTrackwheel.dataset.tracking = "idle";
+  jTrackwheel.dataset.trackingSurface = "none";
+  jTrackwheel.dataset.snapHeld = "false";
+  jTrackwheel.dataset.deferredDeltaY = "0";
+  jTrackwheelBody.classList.remove("is-tracking");
   if (!wasActive) return;
   activeAxis = null;
   jNumber.value = code.j.toFixed(3);
   if (scheduleFinal) schedule();
 }
-jWheel.addEventListener("pointerdown", (event) => {
-  if (event.pointerType === "mouse") {
-    if (event.button !== 0 || jWheelMouseTracking) return;
-    cancelSliceTracking();
-    jWheelMouseTracking = true;
-    beginJWheelMotion(event, "mouse-active");
-    event.stopPropagation();
-    event.preventDefault();
-    return;
-  }
-  if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
-  finishJWheelInteraction(false);
-  cancelSliceTracking();
-  jWheelPointerId = event.pointerId;
-  beginJWheelMotion(event, "drag-active");
+jTrackwheelBody.addEventListener("pointerdown", (event) => {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  if (event.pointerType !== "mouse" && event.pointerType !== "touch" && event.pointerType !== "pen") return;
+  if (jTrackwheelPointerId !== null) return;
+  cancelTrackpadTracking();
+  jTrackwheelPointerId = event.pointerId;
+  beginJTrackwheelMotion(event);
   try {
-    jWheel.setPointerCapture?.(event.pointerId);
+    jTrackwheelBody.setPointerCapture?.(event.pointerId);
   } catch {
     // Synthetic events and browsers without active capture can reject this.
   }
   event.stopPropagation();
   event.preventDefault();
 });
-jWheel.addEventListener("pointermove", (event) => {
-  if (event.pointerId !== jWheelPointerId) return;
-  applyJWheelMotion(event);
+jTrackwheelBody.addEventListener("pointermove", (event) => {
+  if (event.pointerId !== jTrackwheelPointerId) return;
+  applyJTrackwheelMotion(event);
 });
-jWheel.addEventListener("pointerup", (event) => {
-  if (event.pointerId !== jWheelPointerId) return;
-  finishJWheelInteraction();
+jTrackwheelBody.addEventListener("pointerup", (event) => {
+  if (event.pointerId !== jTrackwheelPointerId) return;
+  finishJTrackwheelInteraction();
   event.preventDefault();
 });
-jWheel.addEventListener("pointercancel", (event) => {
-  if (event.pointerId !== jWheelPointerId) return;
-  finishJWheelInteraction();
+jTrackwheelBody.addEventListener("pointercancel", (event) => {
+  if (event.pointerId !== jTrackwheelPointerId) return;
+  finishJTrackwheelInteraction();
 });
-document.addEventListener("pointermove", (event) => {
-  if (!jWheelMouseTracking || event.pointerType !== "mouse") return;
-  applyJWheelMotion(event);
+jTrackwheelBody.addEventListener("lostpointercapture", (event) => {
+  if (event.pointerId !== jTrackwheelPointerId) return;
+  finishJTrackwheelInteraction();
 });
-document.addEventListener("pointerdown", (event) => {
-  if (!jWheelMouseTracking || event.pointerType !== "mouse" || event.button !== 0)
-    return;
-  jWheelSuppressClick = true;
-  window.setTimeout(() => { jWheelSuppressClick = false; }, 300);
-  finishJWheelInteraction();
+
+function isBlankPageTouchTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return true;
+  if (target.closest([
+    ".j-trackwheel-body", ".color-trackpad", ".preview", ".preview-column", ".image-panel",
+    ".view-menu", "dialog", ".app-footer", "button", "input", "select",
+    "textarea", "a", "label", "[role='button']", "[contenteditable='true']",
+  ].join(","))) return false;
+  return Boolean(target.closest(".app-shell, body"));
+}
+function beginPageJTrackwheelGesture(event: PointerEvent) {
+  if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+  if (event.isPrimary === false || jTrackwheelPointerId !== null || trackpadTouchPointerId !== null ||
+      previewPointerId !== null || imageTouchPointerId !== null) return;
+  if (!viewMenu.hidden || imageOptionsDialog.open || !isBlankPageTouchTarget(event.target)) return;
+  cancelTrackpadTracking();
+  jTrackwheelPointerId = event.pointerId;
+  beginJTrackwheelMotion(event, "page");
+  try { appShell.setPointerCapture?.(event.pointerId); } catch { /* synthetic events */ }
   event.preventDefault();
-  event.stopImmediatePropagation();
-}, true);
-document.addEventListener("click", (event) => {
-  if (!jWheelSuppressClick) return;
-  jWheelSuppressClick = false;
+}
+document.addEventListener("pointerdown", beginPageJTrackwheelGesture);
+document.addEventListener("pointermove", event => {
+  if (jTrackwheelSurface !== "page" || event.pointerId !== jTrackwheelPointerId) return;
+  applyJTrackwheelMotion(event);
+}, { passive: false });
+document.addEventListener("pointerup", event => {
+  if (jTrackwheelSurface !== "page" || event.pointerId !== jTrackwheelPointerId) return;
+  finishJTrackwheelInteraction();
   event.preventDefault();
-  event.stopImmediatePropagation();
-}, true);
-jWheel.addEventListener("keydown", (event) => {
+}, { passive: false });
+document.addEventListener("pointercancel", event => {
+  if (jTrackwheelSurface !== "page" || event.pointerId !== jTrackwheelPointerId) return;
+  finishJTrackwheelInteraction();
+}, { passive: false });
+appShell.addEventListener("lostpointercapture", event => {
+  if (jTrackwheelSurface !== "page" || event.pointerId !== jTrackwheelPointerId) return;
+  finishJTrackwheelInteraction();
+});
+document.addEventListener("contextmenu", event => {
+  if (event.target instanceof HTMLImageElement) event.preventDefault();
+});
+document.addEventListener("dragstart", event => {
+  if (event.target instanceof HTMLImageElement) event.preventDefault();
+});
+jTrackwheel.addEventListener("keydown", (event) => {
   const step = event.shiftKey ? 0.05 : 0.01;
   let delta = 0;
   if (event.key === "ArrowUp") delta = step;
@@ -1696,7 +2025,7 @@ jWheel.addEventListener("keydown", (event) => {
   else if (event.key === "End") delta = 1;
   else return;
   event.preventDefault();
-  finishJWheelInteraction(false);
+  finishJTrackwheelInteraction(false);
   invalidatePendingSet();
   activeAxis = "j";
   setRealCode("j", event.key === "Home" ? 0 : event.key === "End" ? 1 : realCode.j + delta);
@@ -1711,7 +2040,7 @@ function applyJNumber(format = false) {
     if (format) jNumber.value = code.j.toFixed(3);
     return;
   }
-  finishJWheelInteraction(false);
+  finishJTrackwheelInteraction(false);
   invalidatePendingSet();
   activeAxis = "j";
   setRealCode("j", value);
@@ -1726,7 +2055,29 @@ jNumber.addEventListener("blur", () => {
   jNumber.value = code.j.toFixed(3);
 });
 
-function applySlicePointer(event: PointerEvent) {
+function applyCoordinateNumber(axis: "x" | "y", input: HTMLInputElement, format = false) {
+  const value = Number(input.value);
+  if (!Number.isFinite(value)) {
+    if (format) input.value = code[axis].toFixed(3);
+    return;
+  }
+  cancelTrackpadTracking();
+  invalidatePendingSet();
+  setRealCode(axis, value);
+  // Numeric coordinate edits may update candidate diagnostics, but never
+  // project onto a Cartesian snap target. Pointer movement owns snapping.
+  updatePatchCandidate(false);
+  setDisplayedCode(realCode);
+  if (format) input.value = code[axis].toFixed(3);
+  schedule();
+}
+for (const [axis, input] of [["x", xNumber], ["y", yNumber]] as const) {
+  input.addEventListener("input", () => applyCoordinateNumber(axis, input));
+  input.addEventListener("change", () => applyCoordinateNumber(axis, input, true));
+  input.addEventListener("blur", () => { input.value = code[axis].toFixed(3); });
+}
+
+function applyTrackpadPointer(event: PointerEvent) {
   const point = slicePoint(event.clientX, event.clientY, gamutSliceImage.getBoundingClientRect());
   invalidatePendingSet();
   activeAxis = "xy";
@@ -1735,86 +2086,87 @@ function applySlicePointer(event: PointerEvent) {
   updatePatchCandidate();
   schedule();
 }
-function cancelSliceTracking() {
-  sliceTrackingActive = false;
-  plotFrame.classList.remove("slice-tracking");
-  plotFrame.dataset.sliceTracking = "idle";
-  if (sliceTouchPointerId !== null) {
+function cancelTrackpadTracking() {
+  trackpadTrackingActive = false;
+  colorTrackpad.classList.remove("trackpad-tracking");
+  colorTrackpad.dataset.trackpadTracking = "idle";
+  if (trackpadTouchPointerId !== null) {
     try {
-      if (plotFrame.hasPointerCapture?.(sliceTouchPointerId)) plotFrame.releasePointerCapture(sliceTouchPointerId);
+      if (colorTrackpad.hasPointerCapture?.(trackpadTouchPointerId)) colorTrackpad.releasePointerCapture(trackpadTouchPointerId);
     } catch { /* capture may already be released */ }
   }
-  sliceTouchPointerId = null;
-  sliceTouchVelocityX = 0;
-  sliceTouchVelocityY = 0;
-  sliceTouchLastTime = 0;
+  trackpadTouchPointerId = null;
+  trackpadTouchVelocityX = 0;
+  trackpadTouchVelocityY = 0;
+  trackpadTouchLastTime = 0;
   activeAxis = null;
   updatePlotLabel();
 }
-function commitSliceTracking(event?: PointerEvent) {
-  if (!sliceTrackingActive) return;
-  if (event && event.target === gamutSliceImage) applySlicePointer(event);
-  cancelSliceTracking();
+function commitTrackpadTracking(event?: PointerEvent) {
+  if (!trackpadTrackingActive) return;
+  if (event && event.target === gamutSliceImage) applyTrackpadPointer(event);
+  cancelTrackpadTracking();
   schedule();
 }
-plotFrame.addEventListener("pointerdown", (event) => {
+colorTrackpad.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "mouse") {
     if (event.button !== 0) return;
-    if (!sliceTrackingActive) {
-      sliceTrackingActive = true;
-      plotFrame.classList.add("slice-tracking");
-      plotFrame.dataset.sliceTracking = "active";
-      applySlicePointer(event);
+    if (!trackpadTrackingActive) {
+      trackpadTrackingActive = true;
+      colorTrackpad.classList.add("trackpad-tracking");
+      colorTrackpad.dataset.trackpadTracking = "active";
+      applyTrackpadPointer(event);
     } else {
-      commitSliceTracking(event);
+      commitTrackpadTracking(event);
     }
     event.stopPropagation();
     event.preventDefault();
     return;
   }
   if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
-  // Slice and wheel gestures are mutually exclusive. A touch/pen slice start
-  // must terminate any document-level mouse wheel tracking left by a desktop
+  // Color trackpad and trackwheel gestures are mutually exclusive. A touch/pen
+  // trackpad start
+  // must terminate any document-level mouse trackwheel tracking left by a desktop
   // pointer sequence before capturing this pointer.
-  finishJWheelInteraction(false);
-  cancelSliceTracking();
-  sliceTouchPointerId = event.pointerId;
-  sliceTouchLastX = event.clientX;
-  sliceTouchLastY = event.clientY;
-  sliceTouchLastTime = Number.isFinite(event.timeStamp) && event.timeStamp > 0 ? event.timeStamp : performance.now();
-  sliceTouchVelocityX = 0;
-  sliceTouchVelocityY = 0;
+  finishJTrackwheelInteraction(false);
+  cancelTrackpadTracking();
+  trackpadTouchPointerId = event.pointerId;
+  trackpadTouchLastX = event.clientX;
+  trackpadTouchLastY = event.clientY;
+  trackpadTouchLastTime = Number.isFinite(event.timeStamp) && event.timeStamp > 0 ? event.timeStamp : performance.now();
+  trackpadTouchVelocityX = 0;
+  trackpadTouchVelocityY = 0;
   activeAxis = "xy";
-  plotFrame.dataset.sliceTracking = "touch-active";
-  plotFrame.classList.add("slice-tracking");
+  colorTrackpad.dataset.trackpadTracking = "touch-active";
+  colorTrackpad.classList.add("trackpad-tracking");
   updatePlotLabel();
-  try { plotFrame.setPointerCapture?.(event.pointerId); } catch { /* synthetic events */ }
+  try { colorTrackpad.setPointerCapture?.(event.pointerId); } catch { /* synthetic events */ }
   event.preventDefault();
 });
 document.addEventListener("pointermove", (event) => {
-  if (!sliceTrackingActive || event.pointerType !== "mouse") return;
-  applySlicePointer(event);
+  if (!trackpadTrackingActive || event.pointerType !== "mouse") return;
+  applyTrackpadPointer(event);
 });
 document.addEventListener("pointerdown", (event) => {
-  if (!sliceTrackingActive || event.pointerType !== "mouse" || event.button !== 0)
+  if (!trackpadTrackingActive || event.pointerType !== "mouse" || event.button !== 0)
     return;
-  if (event.target !== gamutSliceImage) commitSliceTracking();
+  if (event.target !== gamutSliceImage) commitTrackpadTracking();
 });
-plotFrame.addEventListener("pointermove", (event) => {
-  if ((event.pointerType !== "touch" && event.pointerType !== "pen") || event.pointerId !== sliceTouchPointerId) return;
-  const rect = plotFrame.getBoundingClientRect();
-  const dx = event.clientX - sliceTouchLastX;
-  const dy = event.clientY - sliceTouchLastY;
+colorTrackpad.addEventListener("pointermove", (event) => {
+  if ((event.pointerType !== "touch" && event.pointerType !== "pen") || event.pointerId !== trackpadTouchPointerId) return;
+  const rect = colorTrackpad.getBoundingClientRect();
+  const dx = event.clientX - trackpadTouchLastX;
+  const dy = event.clientY - trackpadTouchLastY;
   const eventTime = Number.isFinite(event.timeStamp) && event.timeStamp > 0 ? event.timeStamp : performance.now();
-  const elapsedMs = Math.max(1, eventTime - sliceTouchLastTime);
-  const velocity = rollingBallVelocity({ x: sliceTouchVelocityX, y: sliceTouchVelocityY }, dx, dy, rect.width, rect.height, elapsedMs);
-  sliceTouchVelocityX = velocity.x;
-  sliceTouchVelocityY = velocity.y;
-  sliceTouchLastX = event.clientX;
-  sliceTouchLastY = event.clientY;
-  sliceTouchLastTime = eventTime;
-  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
-  const next = rollingBallDelta(realCode.x, realCode.y, dx, dy, rect.width, rect.height, ROLLING_BALL_SENSITIVITY, acceleration);
+  const elapsedMs = Math.max(1, eventTime - trackpadTouchLastTime);
+  const velocity = trackMotionVelocity({ x: trackpadTouchVelocityX, y: trackpadTouchVelocityY }, dx, dy, rect.width, rect.height, elapsedMs);
+  trackpadTouchVelocityX = velocity.x;
+  trackpadTouchVelocityY = velocity.y;
+  trackpadTouchLastX = event.clientX;
+  trackpadTouchLastY = event.clientY;
+  trackpadTouchLastTime = eventTime;
+  const acceleration = trackMotionAcceleration(Math.hypot(velocity.x, velocity.y));
+  const next = trackpadDelta(realCode.x, realCode.y, dx, dy, rect.width, rect.height, TRACK_SENSITIVITY, acceleration);
   invalidatePendingSet();
   setRealCode("x", next.x);
   setRealCode("y", next.y);
@@ -1823,24 +2175,25 @@ plotFrame.addEventListener("pointermove", (event) => {
   event.preventDefault();
 });
 function finishSliceTouch(event: PointerEvent) {
-  if (event.pointerId !== sliceTouchPointerId) return;
-  try { if (plotFrame.hasPointerCapture?.(event.pointerId)) plotFrame.releasePointerCapture(event.pointerId); } catch { /* synthetic events */ }
-  sliceTouchPointerId = null;
-  sliceTouchVelocityX = 0;
-  sliceTouchVelocityY = 0;
-  sliceTouchLastTime = 0;
-  plotFrame.dataset.sliceTracking = "idle";
-  plotFrame.classList.remove("slice-tracking");
+  if (event.pointerId !== trackpadTouchPointerId) return;
+  try { if (colorTrackpad.hasPointerCapture?.(event.pointerId)) colorTrackpad.releasePointerCapture(event.pointerId); } catch { /* synthetic events */ }
+  trackpadTouchPointerId = null;
+  trackpadTouchVelocityX = 0;
+  trackpadTouchVelocityY = 0;
+  trackpadTouchLastTime = 0;
+  colorTrackpad.dataset.trackpadTracking = "idle";
+  colorTrackpad.classList.remove("trackpad-tracking");
   activeAxis = null;
   updatePlotLabel();
   schedule();
 }
-plotFrame.addEventListener("pointerup", finishSliceTouch);
-plotFrame.addEventListener("pointercancel", finishSliceTouch);
+colorTrackpad.addEventListener("pointerup", finishSliceTouch);
+colorTrackpad.addEventListener("pointercancel", finishSliceTouch);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    cancelSliceTracking();
-    finishJWheelInteraction();
+    cancelTrackpadTracking();
+    finishJTrackwheelInteraction();
+    finishPreviewDrag();
     if (imageTrackingActive) finishImageTracking();
   }
 });
@@ -1852,34 +2205,46 @@ let previewLastTime = 0;
 let previewVelocityX = 0;
 let previewVelocityY = 0;
 let previewDragging = false;
-function finishPreviewDrag() {
-  if (previewPointerId === null) return;
-  try { if (preview.hasPointerCapture?.(previewPointerId)) preview.releasePointerCapture(previewPointerId); } catch { /* best effort */ }
+let previewSuppressClick = false;
+function finishPreviewDrag(scheduleFinal = true) {
+  if (previewPointerId === null) return false;
+  const capturedPointer = previewPointerId;
+  const dragged = previewDragging;
   previewPointerId = null;
+  try { if (preview.hasPointerCapture?.(capturedPointer)) preview.releasePointerCapture(capturedPointer); } catch { /* best effort */ }
   previewDragging = false;
   previewVelocityX = previewVelocityY = 0;
   backgroundTracking = false;
   preview.dataset.tracking = "idle";
+  if (dragged && scheduleFinal) schedule();
+  return dragged;
 }
 function applyPreviewDrag(event: PointerEvent) {
   if (previewPointerId === null || event.pointerId !== previewPointerId) return;
-  const now = performance.now();
-  const elapsed = Math.max(1, now - previewLastTime);
+  const rect = preview.getBoundingClientRect();
+  const eventTime = jTrackwheelEventTime(event);
+  const elapsed = Math.max(1, eventTime - previewLastTime);
   const dx = event.clientX - previewStartX;
   const dy = event.clientY - previewLastY;
   previewStartX = event.clientX;
   previewLastY = event.clientY;
-  const velocity = rollingBallVelocity({ x: previewVelocityX, y: previewVelocityY }, dx, dy, preview.clientWidth || 1, preview.clientHeight || 1, elapsed);
-  previewVelocityX = velocity.x; previewVelocityY = velocity.y; previewLastTime = now;
+  const velocity = trackMotionVelocity(
+    { x: previewVelocityX, y: previewVelocityY },
+    dx,
+    dy,
+    rect.height,
+    rect.height,
+    elapsed,
+  );
+  previewVelocityX = velocity.x; previewVelocityY = velocity.y; previewLastTime = eventTime;
   if (!previewDragging && Math.abs(event.clientY - previewStartY) < 6) return;
   previewDragging = true;
   preview.dataset.tracking = "active";
-  const acceleration = rollingBallAcceleration(Math.hypot(velocity.x, velocity.y));
-  const next = rollingWheelDelta(backgroundJ, dy, preview.clientHeight || 1, ROLLING_BALL_SENSITIVITY, acceleration);
-  backgroundJ = next;
-  if (backgroundSnap !== null && Math.abs(backgroundJ - backgroundSnap) <= 0.02) backgroundJ = backgroundSnap;
+  const acceleration = trackMotionAcceleration(Math.hypot(velocity.x, velocity.y));
+  realBackgroundJ = trackwheelDelta(realBackgroundJ, dy, rect.height, TRACK_SENSITIVITY, acceleration);
   invalidatePendingSet();
-  updateBackground();
+  // A real Background gesture is the only operation allowed to create a snap.
+  updateBackground(true);
   schedule();
   event.preventDefault();
 }
@@ -1889,24 +2254,30 @@ preview.addEventListener("pointerdown", event => {
   previewPointerId = event.pointerId;
   backgroundTracking = true;
   previewStartX = event.clientX; previewStartY = event.clientY; previewLastY = event.clientY;
-  previewLastTime = performance.now(); previewVelocityX = previewVelocityY = 0; previewDragging = false;
-  if (event.pointerType !== "mouse") { try { preview.setPointerCapture(event.pointerId); } catch { /* best effort */ } }
+  previewLastTime = jTrackwheelEventTime(event); previewVelocityX = previewVelocityY = 0; previewDragging = false;
+  try { preview.setPointerCapture(event.pointerId); } catch { /* best effort */ }
   event.preventDefault();
 });
 preview.addEventListener("pointermove", applyPreviewDrag);
 preview.addEventListener("pointerup", event => {
   if (event.pointerId !== previewPointerId) return;
-  const dragged = previewDragging;
-  finishPreviewDrag();
-  if (dragged) { backgroundSuppressClick = true; window.setTimeout(() => { backgroundSuppressClick = false; }, 300); }
-  else if (event.pointerType !== "mouse") openViewMenu();
+  const dragged = finishPreviewDrag();
+  if (dragged) {
+    previewSuppressClick = true;
+    window.setTimeout(() => { previewSuppressClick = false; }, 300);
+    event.preventDefault();
+  }
 });
-preview.addEventListener("pointercancel", finishPreviewDrag);
-document.addEventListener("pointermove", event => {
-  if (previewPointerId !== null && event.pointerType === "mouse") applyPreviewDrag(event);
+preview.addEventListener("pointercancel", event => {
+  if (event.pointerId !== previewPointerId) return;
+  finishPreviewDrag();
+});
+preview.addEventListener("lostpointercapture", event => {
+  if (event.pointerId !== previewPointerId) return;
+  finishPreviewDrag();
 });
 preview.addEventListener("click", event => {
-  if (backgroundSuppressClick) { event.preventDefault(); event.stopPropagation(); return; }
+  if (previewSuppressClick) { previewSuppressClick = false; event.preventDefault(); event.stopPropagation(); return; }
   openViewMenu();
 });
 viewButtons.forEach(button => button.addEventListener("click", () => {
@@ -1929,18 +2300,18 @@ document.addEventListener("pointerdown", event => {
 });
 window.addEventListener("resize", () => {
   closeViewMenu();
-  updateJWheelVisual();
+  updateJTrackwheelVisual();
   updateImageGeometry();
   drawImageOverlay();
   // Grid track sizes settle after the resize event.  A queued task catches
   // browsers that deliver ResizeObserver after the next layout read.
-  window.setTimeout(() => updateJWheelVisual(), 0);
+  window.setTimeout(() => updateJTrackwheelVisual(), 0);
 });
 // Resize events can fire before the grid has applied its new track size.  The
-// observer runs after layout, ensuring the free wheel texture is rescaled to
+// observer runs after layout, ensuring the free trackwheel texture is rescaled to
 // the actual companion height rather than the stale pre-resize height.
 if (typeof ResizeObserver !== "undefined") {
-  new ResizeObserver(() => updateJWheelVisual()).observe(jWheel);
+  new ResizeObserver(() => updateJTrackwheelVisual()).observe(jTrackwheel);
 }
 window.addEventListener("pagehide", () => {
   pageClosed = true;
@@ -1968,19 +2339,28 @@ encodedValue.addEventListener("keydown", (event) => {
     setFromHex();
   }
 });
+encodedLabel.addEventListener("click", (event) => {
+  const target = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-encoded-mode]");
+  if (!target) return;
+  encodedReadoutMode = target.dataset.encodedMode === "jxy" ? "jxy" : "ap1";
+  renderEncodedLabel();
+  updateEncodedReadout(undefined, lastEvaluationValid);
+});
 
 setAllCode(code);
-desaturateToggle.disabled = !fullRec2020;
-fullRec2020Toggle.setAttribute("aria-pressed", String(fullRec2020));
-desaturateToggle.setAttribute("aria-pressed", String(desaturate));
+renderEncodedLabel();
+updateEncodedReadout();
+setRec2020AuthoringOptions(fullRec2020);
 paintCheckerboard();
 drawIndicators();
-plotFrame.dataset.sliceTracking = "idle";
-jWheel.dataset.tracking = "idle";
+colorTrackpad.dataset.trackpadTracking = "idle";
+jTrackwheel.dataset.tracking = "idle";
+jTrackwheel.dataset.snapHeld = "false";
+jTrackwheel.dataset.deferredDeltaY = "0";
 imageViewport.dataset.tracking = "idle";
 jReferenceTick.style.bottom = `${J_REFERENCE_WHITE * 100}%`;
 jReferenceTick.title = `203 nits HDR white — J\u2032 ${J_REFERENCE_WHITE.toFixed(6)}`;
-backgroundJ = 0.15;
+realBackgroundJ = 0.15;
 updateBackground();
 requestPatches(true);
 requestEvaluate();

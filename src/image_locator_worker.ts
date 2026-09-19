@@ -1,15 +1,17 @@
 import init, {
   inspect,
   new_bounded_display_preview,
-  image_picker_analyze_ap0_scaled,
+  image_picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white,
+  image_picker_analyze_scene_ap0,
   image_picker_code_from_acescg,
-  image_picker_display_rgb_ap0_batch_mode,
+  image_picker_display_rgb_xyz_d65_batch,
+  image_picker_display_rgb_scene_ap0_batch,
   picker_gpu_parameters,
   prepare,
   prepare_heic_pixels,
 } from "./wasm/decomposition_pkg/modcam16_decomposition_wasm.js";
 import { encodeLinearRgbPng, type ViewId } from "./preview_png";
-import { SliceWebGpuRenderer } from "./slice_webgpu";
+import { SliceWebGpuRenderer, type ImageSourceMode } from "./slice_webgpu";
 import libheif from "libheif-js/wasm-bundle";
 
 type ImageRequest = {
@@ -26,8 +28,7 @@ type ImageRequest = {
   token?: number;
   appearanceToken?: number;
   view?: ViewId;
-  scale203?: boolean;
-  desaturate?: boolean;
+  treatDisplayLinearOneAsHdr203White?: boolean;
 };
 type TransformRenderer = "webgpu" | "wasm";
 
@@ -36,6 +37,7 @@ type Prepared = {
   width: number;
   height: number;
   summary: any;
+  sourceMode: ImageSourceMode;
   boundedPreview?: { width: number; height: number; pixels: Float32Array };
 };
 
@@ -92,9 +94,15 @@ function ensureFallbackWorkers(): FallbackWorker[] {
   return workers;
 }
 
-async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, scale203: boolean, desaturate: boolean): Promise<Float32Array> {
+function wasmDisplayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: ImageSourceMode, treatDisplayLinearOneAsHdr203White: boolean): Float32Array {
+  return sourceMode === "scene-reference-aces"
+    ? image_picker_display_rgb_scene_ap0_batch(pixels, view)
+    : image_picker_display_rgb_xyz_d65_batch(pixels, view, treatDisplayLinearOneAsHdr203White);
+}
+
+async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: ImageSourceMode, treatDisplayLinearOneAsHdr203White: boolean): Promise<Float32Array> {
   const workers = ensureFallbackWorkers().filter(entry => !entry.failed);
-  if (!workers.length) return image_picker_display_rgb_ap0_batch_mode(pixels, view, scale203, desaturate);
+  if (!workers.length) return wasmDisplayRgbBatch(pixels, view, sourceMode, treatDisplayLinearOneAsHdr203White);
   const output = new Float32Array(pixels.length);
   const jobs: Promise<void>[] = [];
   for (let offset = 0, chunk = 0; offset < pixels.length; offset += CPU_BATCH_PIXELS * 3, chunk += 1) {
@@ -103,7 +111,7 @@ async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, scale203: 
     const backup = input.slice();
     const candidates = workers.filter(entry => !entry.failed);
     if (!candidates.length) {
-      output.set(image_picker_display_rgb_ap0_batch_mode(input, view, scale203, desaturate), offset);
+      output.set(wasmDisplayRgbBatch(input, view, sourceMode, treatDisplayLinearOneAsHdr203White), offset);
       continue;
     }
     const slot = candidates[fallbackWorkerCursor++ % candidates.length];
@@ -114,15 +122,15 @@ async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, scale203: 
         // locally so a transient worker failure cannot corrupt row ordering.
         const converted = result.length === input.length
           ? result
-          : image_picker_display_rgb_ap0_batch_mode(backup, view, scale203, desaturate);
+          : wasmDisplayRgbBatch(backup, view, sourceMode, treatDisplayLinearOneAsHdr203White);
         output.set(converted, offset);
         resolve();
       });
       try {
-        slot.worker.postMessage({ id, pixels: input.buffer, view, scale203, desaturate }, [input.buffer]);
+        slot.worker.postMessage({ id, pixels: input.buffer, view, sourceMode, treatDisplayLinearOneAsHdr203White }, [input.buffer]);
       } catch {
         slot.failed = true;
-        const converted = image_picker_display_rgb_ap0_batch_mode(backup, view, scale203, desaturate);
+        const converted = wasmDisplayRgbBatch(backup, view, sourceMode, treatDisplayLinearOneAsHdr203White);
         slot.pending.delete(id);
         output.set(converted, offset);
         resolve();
@@ -133,12 +141,12 @@ async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, scale203: 
   return output;
 }
 
-async function displayRgbBatch(pixels: Float32Array, view: ViewId, scale203: boolean, desaturate: boolean): Promise<Float32Array> {
+async function displayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: ImageSourceMode, treatDisplayLinearOneAsHdr203White: boolean): Promise<Float32Array> {
   if (!pixels.length) return new Float32Array();
   if (!imageGpuDisabled && imageGpu.available) {
     try {
       imageGpuParameters ??= picker_gpu_parameters();
-      return await imageGpu.renderImage(imageGpuParameters, viewIndex(view), scale203, desaturate, pixels);
+      return await imageGpu.renderImage(imageGpuParameters, viewIndex(view), sourceMode, treatDisplayLinearOneAsHdr203White, pixels);
     } catch {
       imageGpuDisabled = true;
     }
@@ -146,9 +154,9 @@ async function displayRgbBatch(pixels: Float32Array, view: ViewId, scale203: boo
   // Keep the fallback bounded and parallel. The WASM implementation is the
   // numerical reference when WebGPU is absent or fails validation.
   try {
-    return await cpuDisplayRgbBatch(pixels, view, scale203, desaturate);
+    return await cpuDisplayRgbBatch(pixels, view, sourceMode, treatDisplayLinearOneAsHdr203White);
   } catch {
-    return image_picker_display_rgb_ap0_batch_mode(pixels, view, scale203, desaturate);
+    return wasmDisplayRgbBatch(pixels, view, sourceMode, treatDisplayLinearOneAsHdr203White);
   }
 }
 
@@ -320,8 +328,7 @@ function summaryForHeif(decoded: Awaited<ReturnType<typeof decodeHeif>>, format:
 async function makePreview(
   prepared: Prepared,
   view: ViewId,
-  scale203: boolean,
-  desaturate: boolean,
+  treatDisplayLinearOneAsHdr203White: boolean,
 ): Promise<{ png: Uint8Array; width: number; height: number; renderer: TransformRenderer }> {
   if (!prepared.boundedPreview) {
     const display = new_bounded_display_preview(prepared.width, prepared.height, 1600);
@@ -350,7 +357,7 @@ async function makePreview(
   const batchLength = 131_072 * 3;
   for (let offset = 0; offset < source.pixels.length; offset += batchLength) {
     const end = Math.min(source.pixels.length, offset + batchLength);
-    const converted = await displayRgbBatch(source.pixels.subarray(offset, end), view, scale203, desaturate);
+    const converted = await displayRgbBatch(source.pixels.subarray(offset, end), view, prepared.sourceMode, treatDisplayLinearOneAsHdr203White);
     rgb.set(converted, offset);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
@@ -378,7 +385,7 @@ async function inspectImage(message: ImageRequest, bytes: Uint8Array): Promise<v
     const image = prepare(bytes, request);
     const summary = image.summary ?? inspect(bytes, message.format);
     const width = Number(image.width), height = Number(image.height);
-    preparedById.set(message.id, { image, width, height, summary });
+    preparedById.set(message.id, { image, width, height, summary, sourceMode: "display-linear-xyz-d65" });
     scope.postMessage({ kind: "inspect", id: message.id, generation: message.generation ?? 0, summary });
     return;
   }
@@ -436,18 +443,27 @@ async function prepareImage(message: ImageRequest, bytes: Uint8Array): Promise<v
   if (previous && previous.image !== image) {
     try { previous.image.free(); } catch { /* best effort */ }
   }
-  preparedById.set(message.id, { image, width, height, summary });
-  const preview = await makePreview(preparedById.get(message.id)!, message.view ?? 0, message.scale203 ?? true, message.desaturate ?? false);
-  scope.postMessage({ kind: "ready", id: message.id, generation: message.generation ?? 0, width, height, previewWidth: preview.width, previewHeight: preview.height, summary, view: message.view ?? 0, scale203: message.scale203 ?? true, desaturate: message.desaturate ?? false, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
+  const effectiveGamut = message.gamut ?? summary?.gamut ?? null;
+  const sourceMode: ImageSourceMode = message.format.toLowerCase() === "dng"
+    ? "display-linear-xyz-d65"
+    : message.format.toLowerCase() === "exr" &&
+    (effectiveGamut === "ACEScg" || effectiveGamut === "ACES2065-1")
+    ? "scene-reference-aces"
+    : "display-linear-xyz-d65";
+  preparedById.set(message.id, { image, width, height, summary, sourceMode });
+  const treatDisplayLinearOneAsHdr203White = message.treatDisplayLinearOneAsHdr203White ?? false;
+  const preview = await makePreview(preparedById.get(message.id)!, message.view ?? 0, treatDisplayLinearOneAsHdr203White);
+  scope.postMessage({ kind: "ready", id: message.id, generation: message.generation ?? 0, width, height, previewWidth: preview.width, previewHeight: preview.height, summary, view: message.view ?? 0, sourceMode, treatDisplayLinearOneAsHdr203White, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
 }
 
 async function previewImage(message: ImageRequest): Promise<void> {
   const prepared = preparedById.get(message.id);
   if (!prepared) throw new Error("The image is not prepared; load it again.");
-  const preview = await makePreview(prepared, message.view ?? 0, message.scale203 ?? true, message.desaturate ?? false);
+  const treatDisplayLinearOneAsHdr203White = message.treatDisplayLinearOneAsHdr203White ?? false;
+  const preview = await makePreview(prepared, message.view ?? 0, treatDisplayLinearOneAsHdr203White);
   if ((latestGenerationById.get(message.id) ?? message.generation ?? 0) !== (message.generation ?? 0)) return;
   if ((latestAppearanceTokenById.get(message.id) ?? message.appearanceToken ?? 0) !== (message.appearanceToken ?? 0)) return;
-  scope.postMessage({ kind: "preview", id: message.id, generation: message.generation ?? 0, appearanceToken: message.appearanceToken ?? 0, width: prepared.width, height: prepared.height, previewWidth: preview.width, previewHeight: preview.height, view: message.view ?? 0, scale203: message.scale203 ?? true, desaturate: message.desaturate ?? false, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
+  scope.postMessage({ kind: "preview", id: message.id, generation: message.generation ?? 0, appearanceToken: message.appearanceToken ?? 0, width: prepared.width, height: prepared.height, previewWidth: preview.width, previewHeight: preview.height, view: message.view ?? 0, sourceMode: prepared.sourceMode, treatDisplayLinearOneAsHdr203White, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
 }
 
 async function previewLatest(): Promise<void> {
@@ -485,12 +501,14 @@ async function sampleImage(message: ImageRequest): Promise<void> {
   for (let y = minY; y <= maxY; y += 1) {
     for (let x = minX; x <= maxX; x += 1) {
       const local = ((y - minY) * prepared.width + x) * 3;
-      const ap0 = [pixels[local], pixels[local + 1], pixels[local + 2]];
+      const source = [pixels[local], pixels[local + 1], pixels[local + 2]];
       // The loupe is a rectangular nearest-neighbor raster. Keep every pixel
       // in the clipped square, including pixels just outside the sampling
       // circle, so the UI can render a stable grid without holes.
-      loupe.push(...Array.from(ap0));
-      const converted = image_picker_analyze_ap0_scaled(ap0[0], ap0[1], ap0[2], message.scale203 ?? true);
+      loupe.push(...Array.from(source));
+      const converted = prepared.sourceMode === "scene-reference-aces"
+        ? image_picker_analyze_scene_ap0(source[0], source[1], source[2])
+        : image_picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(source[0], source[1], source[2], message.treatDisplayLinearOneAsHdr203White ?? false);
       const inCircle = Math.hypot(x - cx, y - cy) <= radius + 1e-12;
       if (!inCircle) continue;
       if (converted[0] > 0.5) {
@@ -510,19 +528,19 @@ async function sampleImage(message: ImageRequest): Promise<void> {
   const meanCode = points.length
     ? image_picker_code_from_acescg(meanAcescg[0], meanAcescg[1], meanAcescg[2])
     : new Float64Array([0, 0, 0, 0]);
-  // Render the interpreted AP0 samples into display RGB for a direct loupe
+  // Render the interpreted XYZ-D65 or scene-AP0 samples into display RGB for a direct loupe
   // image. CSS pixelated scaling preserves one sharp square per source pixel
   // without decoding this HDR PNG through a 2D canvas.
   const loupeWidth = maxX - minX + 1;
   const loupeHeight = maxY - minY + 1;
   const loupeRgb = loupe.length
-    ? await displayRgbBatch(new Float32Array(loupe), message.view ?? 0, message.scale203 ?? true, message.desaturate ?? false)
+    ? await displayRgbBatch(new Float32Array(loupe), message.view ?? 0, prepared.sourceMode, message.treatDisplayLinearOneAsHdr203White ?? false)
     : new Float32Array();
   const loupePng = loupeRgb.length
     ? encodeLinearRgbPng(message.view ?? 0, loupeWidth, loupeHeight, loupeRgb)
     : new Uint8Array();
   if ((latestSampleTokenById.get(message.id) ?? message.token ?? 0) !== (message.token ?? 0)) return;
-  scope.postMessage({ kind: "sample", id: message.id, generation: message.generation ?? 0, token: message.token ?? 0, x: cx, y: cy, minX, minY, width: loupeWidth, height: loupeHeight, loupe: loupePng.buffer, points, mean, meanAcescg, meanCode, rejected, total: points.length + rejected, view: message.view ?? 0, scale203: message.scale203 ?? true, desaturate: message.desaturate ?? false }, [loupePng.buffer]);
+  scope.postMessage({ kind: "sample", id: message.id, generation: message.generation ?? 0, token: message.token ?? 0, x: cx, y: cy, minX, minY, width: loupeWidth, height: loupeHeight, loupe: loupePng.buffer, points, mean, meanAcescg, meanCode, rejected, total: points.length + rejected, view: message.view ?? 0, sourceMode: prepared.sourceMode, treatDisplayLinearOneAsHdr203White: message.treatDisplayLinearOneAsHdr203White ?? false }, [loupePng.buffer]);
 }
 
 async function sampleLatest(): Promise<void> {

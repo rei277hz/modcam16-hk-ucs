@@ -8,14 +8,14 @@ import { SliceWebGpuRenderer } from "./slice_webgpu";
 
 type RenderMessage = {
   kind: "render"; id: number; profile: ViewId; j: number;
-  width: number; height: number; fullRec2020: boolean; desaturate: boolean;
+  width: number; height: number; fullRec2020: boolean;
 };
 type EvaluateMessage = {
   kind: "evaluate"; id: number; profile: ViewId; j: number;
-  fittedRadiusX: number; fittedRadiusY: number; backgroundJ: number; fullRec2020: boolean; desaturate: boolean;
+  fittedRadiusX: number; fittedRadiusY: number; backgroundJ: number; fullRec2020: boolean;
 };
 type Message = RenderMessage | EvaluateMessage
-  | { kind: "colorchecker"; id: number; profile: ViewId; desaturate: boolean }
+  | { kind: "colorchecker"; id: number; profile: ViewId }
   | { kind: "set"; id: number; profile: number; red: number; green: number; blue: number; fullRec2020: boolean }
   | { kind: "cancel-render"; id: number };
 
@@ -41,7 +41,7 @@ function viewIndex(view: ViewId) {
 async function renderSlice(message: RenderMessage) {
   await ready;
   if (latest.get("render") !== message.id) return;
-  const baseKey = `${message.profile}:${Number(message.fullRec2020)}:${Number(message.desaturate)}:${message.j.toFixed(12)}:${message.width}:${message.height}`;
+  const baseKey = `${message.profile}:${Number(message.fullRec2020)}:${message.j.toFixed(12)}:${message.width}:${message.height}`;
   let pixels = cachedSlice?.key === baseKey ? cachedSlice.pixels : undefined;
   let renderer: "webgpu" | "wasm" = cachedSlice?.key === baseKey ? cachedSlice.renderer : "wasm";
   if (!pixels) {
@@ -51,13 +51,13 @@ async function renderSlice(message: RenderMessage) {
     if (message.width === FULL_SLICE && message.height === FULL_SLICE && gpuSlice.available) {
       try {
         gpuParameters ??= picker_gpu_parameters();
-        pixels = await gpuSlice.render(gpuParameters, viewIndex(message.profile), message.j, message.width, message.height, message.fullRec2020, message.desaturate);
+        pixels = await gpuSlice.render(gpuParameters, viewIndex(message.profile), message.j, message.width, message.height, message.fullRec2020);
         renderer = "webgpu";
       } catch {
-        pixels = picker_render_linear_rows_mode(message.profile, message.j, message.width, message.height, 0, message.height, message.fullRec2020, message.desaturate);
+        pixels = picker_render_linear_rows_mode(message.profile, message.j, message.width, message.height, 0, message.height, message.fullRec2020);
       }
     } else {
-      pixels = picker_render_linear_rows_mode(message.profile, message.j, message.width, message.height, 0, message.height, message.fullRec2020, message.desaturate);
+      pixels = picker_render_linear_rows_mode(message.profile, message.j, message.width, message.height, 0, message.height, message.fullRec2020);
     }
     cachedSlice = { key: baseKey, pixels, renderer };
   }
@@ -90,7 +90,7 @@ async function evaluateLatest() {
   try {
     await ready;
     if (latest.get("evaluate") !== message.id) return;
-    const values = picker_evaluate_mode(message.profile, message.j, message.fittedRadiusX, message.fittedRadiusY, message.backgroundJ, message.fullRec2020, message.desaturate);
+    const values = picker_evaluate_mode(message.profile, message.j, message.fittedRadiusX, message.fittedRadiusY, message.backgroundJ, message.fullRec2020);
     workerScope.postMessage({ ...message, values });
     try {
       const png = encodePreview(message.profile, values.slice(26, 29), values.slice(29, 32), values[0] > 0.5);
@@ -119,7 +119,7 @@ workerScope.onmessage = ({ data: message }) => {
       pendingRender = message;
       if (!renderQueued) void renderLatest();
     } else if (message.kind === "colorchecker") {
-      const points = picker_colorchecker_mode(message.profile, message.desaturate);
+      const points = picker_colorchecker_mode(message.profile);
       const width = 1024, height = 1024;
       const rgba = new Float32Array(width * height * 4);
       for (let patch = 0; patch < 18; patch += 1) {

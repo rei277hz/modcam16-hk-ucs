@@ -1,5 +1,5 @@
 // Accurate f32 port of the shared ACES 2.0 fixed-function forward transform
-// and the original modCAM16-HK exposure solve. The profile constants and
+// and modCAM16-HK exposure solve. The profile constants and
 // OCIO-derived lookup tables are serialized by color_core::gpu_parameter_blob.
 
 struct Params {

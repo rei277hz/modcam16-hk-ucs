@@ -18,6 +18,7 @@ from picker_reference import PEAK, REFERENCE_J, P3, REC709, REC2020, code_xyz, n
 
 
 CONFIG = Path(__file__).parent / "reference" / "cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio"
+HDR203_DIFFUSE_WHITE_SCALE = 2.03
 PROFILES = {
     "0": "ACES 2.0 - HDR 1000 nits (Rec.2020)",
     "1": "ACES 2.0 - SDR 100 nits (Rec.709)",
@@ -85,9 +86,9 @@ def main() -> None:
     codes = [[0, .5, .5], [REFERENCE_J, .5, .5], [100 / PEAK, .5, .5],
              [1, .5, .5], [.38, .86, .62], [.3, .38, .65], [.6, .55, .53], [.1, .48, .52]]
     xyz = np.array([code_xyz(code) for code in codes])
-    scene = _apply(hdr_inverse, xyz * 2.03)
+    scene = _apply(hdr_inverse, xyz * HDR203_DIFFUSE_WHITE_SCALE)
     backgrounds = [0, REFERENCE_J, neutral_jhk(203) / PEAK, 1]
-    bg_xyz = np.array([code_xyz([v, .5, .5]) * 2.03 for v in backgrounds])
+    bg_xyz = np.array([code_xyz([v, .5, .5]) * HDR203_DIFFUSE_WHITE_SCALE for v in backgrounds])
     bg_scene = _apply(hdr_inverse, bg_xyz)
     records["picker"] = {
         "peak_jhk": PEAK, "reference_j": REFERENCE_J,

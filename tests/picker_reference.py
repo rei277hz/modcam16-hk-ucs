@@ -48,9 +48,10 @@ def neutral_jhk(nits):
 
 
 PEAK = neutral_jhk(1000)
-# The browser ruler marks the 203-nit appearance white.  In this fixed
-# appearance context that white has J_HK=100; the former 100-nit locator was
-# an obsolete pre-2.03 convention.
+FITTED_RADIUS_K = 5.977038579617132
+FITTED_RADIUS_D = 3.557365336640551
+# The browser ruler marks the 203-nit appearance white. In this fixed
+# appearance context that white has J_HK=100.
 REFERENCE_J = neutral_jhk(203) / PEAK
 
 
@@ -68,7 +69,7 @@ def code_xyz(code):
     j, x, y = code
     x, y = 2*x - 1, 2*y - 1
     radius = np.hypot(x, y)
-    saturation = 6.900502700352508 * np.expm1(3.185803578575629 * radius)
+    saturation = FITTED_RADIUS_K * np.expm1(FITTED_RADIUS_D * radius)
     h = np.arctan2(-x, y)
     u = .007 / .525 * saturation
     jhk = j * PEAK

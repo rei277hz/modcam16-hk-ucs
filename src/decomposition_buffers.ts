@@ -49,7 +49,7 @@ export function convertExrRow(base: Float32Array, exposureNormEv: Float32Array, 
     baseR[x] = floatToHalf(ap1r); baseG[x] = floatToHalf(ap1g); baseB[x] = floatToHalf(ap1b);
     // Keep the two encodings independent. `exposureNormEv` is the normalized EV
     // channel and is guaranteed to remain in [0, 1]; the RGB exposure output
-    // receives the solver's original scene-linear scalar directly. Rebuilding
+    // receives the solver's direct scene-linear scalar. Rebuilding
     // the scalar from a clamped normalized EV loses out-of-range exposure.
     const normalized = exposureNormEv[i];
     exposureNormEvOut[x] = floatToHalf(Number.isNaN(normalized) ? 0 : Math.min(1, Math.max(0, normalized)));

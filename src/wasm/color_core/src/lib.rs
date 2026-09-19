@@ -198,8 +198,7 @@ fn source_cone_valid(profile: u32, source_rgb: [f64; 3], xyz: [f64; 3]) -> bool 
     profile != 0 || min3(mat(&XYZ_TO_REC2020, xyz)) >= -1.0e-6
 }
 
-// The normalized Cartesian picker models a target-gamut cone, rather than
-// the legacy encoded/cube viewport. Positive linear channels are therefore
+// The normalized Cartesian picker models a target-gamut cone. Positive linear channels are therefore
 // valid above 1.0; only negative channels (and the profile-0 P3-D65 limit)
 // make a normalized sample unavailable.
 fn normalized_cone_valid(profile: u32, source_rgb: [f64; 3], xyz: [f64; 3]) -> bool {
@@ -487,10 +486,13 @@ fn unit_cube_valid(value: [f64; 3]) -> bool {
 
 // Normalized Painter-channel JHK API. These constants are shared with the
 // modCAM16-HK view shader and intentionally live beside the f64 reference
-// implementation so browser controls and shader-authored values agree.
+// implementation so browser controls and shader-authored Rec.2020 values agree.
 const J_HK_PEAK: f64 = 183.7488220212894;
-const FITTED_RADIUS_K: f64 = 6.900502700352508;
-const FITTED_RADIUS_D: f64 = 3.185803578575629;
+const NORMALIZED_HDR203_DIFFUSE_WHITE_SCALE: f64 = 2.03;
+// Calculated to contain the Rec.2020 pure-blue endpoint
+// s_max=203.64174424420062 while retaining smooth logarithmic interpolation.
+const FITTED_RADIUS_K: f64 = 5.977038579617132;
+const FITTED_RADIUS_D: f64 = 3.557365336640551;
 
 fn normalized_j_scale(_profile: u32) -> f64 {
     J_HK_PEAK
@@ -498,7 +500,7 @@ fn normalized_j_scale(_profile: u32) -> f64 {
 
 fn normalized_xyz_scale(profile: u32) -> f64 {
     if profile == 0 || profile == 2 {
-        2.03
+        NORMALIZED_HDR203_DIFFUSE_WHITE_SCALE
     } else {
         1.0
     }
@@ -507,8 +509,7 @@ fn normalized_xyz_scale(profile: u32) -> f64 {
 fn normalized_model(_profile: u32) -> Model {
     let mut model = model();
     // Match the Painter shader's common D65/203-nit context for every
-    // normalized profile. These explicit constants avoid inheriting the
-    // legacy 20-nit model used by the polar picker.
+    // normalized profile.
     model.cam_f_l = 0.46646834500532247;
     model.cam_a_w = 31.7941491565276;
     model.cam_z = 1.48 + 0.10_f64.sqrt();
@@ -780,7 +781,7 @@ pub fn convert_normalized_profile(
         if target_profile == 3 {
             (source_to_xyz(3, retained), retained)
         } else {
-            let acescg = aces_output::inverse(1, source_to_xyz(3, retained));
+            let acescg = aces_output::inverse_from_xyz_d65(1, source_to_xyz(3, retained));
             (transform_from_acescg(target_profile, acescg), acescg)
         }
     } else if target_profile == 3 {
@@ -923,12 +924,9 @@ fn adapted_display_valid(profile: u32, xyz: [f64; 3], tolerance: f64) -> bool {
     let acescg = transform_to_acescg(profile, xyz);
     finite3(xyz)
         && finite3(source_rgb)
-        // Adapted values are produced through a second matrix path before
-        // reaching the raster. Use the same small boundary tolerance for the
-        // continuous picker and the pixel sampler so round-off cannot make a
-        // dot unavailable while the pixel underneath is accepted. Keep the
-        // original strict boundary at the exact D65 identity so the legacy
-        // viewport is bit-for-bit unchanged there.
+        // Adapted values use the same small boundary tolerance for the
+        // continuous picker and pixel sampler so round-off cannot make a dot
+        // unavailable while the underlying pixel is accepted.
         && min3(source_rgb) >= -tolerance
         && (profile != 3 || max3(source_rgb) <= 1.0 + tolerance)
         && (profile != 0 || min3(mat(&XYZ_TO_REC2020, xyz)) >= -tolerance)
@@ -1194,10 +1192,9 @@ fn solve_neutral_reflectance_for_j_hk(model: Model, profile: u32, target: f64) -
     (0.5 * (lower + upper), true)
 }
 
-// Keep the scalar helper available to callers inside this crate. Unlike the
-// old implementation, it deliberately returns a finite boundary for an
-// unreachable target; callers that need to distinguish a fallback use the
-// tuple-returning solver above.
+// Keep the scalar helper available to callers inside this crate. It returns a
+// finite boundary for an unreachable target; callers that need to distinguish
+// a fallback use the tuple-returning solver above.
 #[allow(dead_code)]
 fn neutral_reflectance_for_j_hk(model: Model, profile: u32, target: f64) -> f64 {
     solve_neutral_reflectance_for_j_hk(model, profile, target).0
@@ -1271,7 +1268,7 @@ fn transform_to_acescg(profile: u32, xyz: [f64; 3]) -> [f64; 3] {
     if profile == 3 {
         mat(&XYZ_D65_TO_ACESCG, xyz)
     } else {
-        aces_output::inverse(profile, xyz)
+        aces_output::inverse_from_xyz_d65(profile, xyz)
     }
 }
 
@@ -1304,7 +1301,7 @@ fn acescg_to_srgb_xyz(acescg: [f64; 3]) -> [f64; 3] {
 }
 
 fn srgb_to_acescg(linear: [f64; 3]) -> [f64; 3] {
-    aces_output::inverse(1, source_to_xyz(3, linear))
+    aces_output::inverse_from_xyz_d65(1, source_to_xyz(3, linear))
 }
 
 fn decode_srgb(value: f64) -> f64 {
@@ -1467,7 +1464,7 @@ pub fn evaluate(profile: u32, reflectance: f64, hue: f64, saturation: f64) -> Ve
 }
 
 /// Evaluate a color with display-side CAT02 adaptation. The first 24 values
-/// retain the legacy layout; values 24..26 and 27..29 are adapted background
+/// The first 24 values use the established layout; values 24..26 and 27..29 are adapted background
 /// Display-P3 and sRGB encodings, 30..32 retain the pre-adaptation source
 /// encoding, and 33..36 carry adapted neutral/foreground polar coordinates.
 #[wasm_bindgen]
@@ -1838,10 +1835,9 @@ fn coordinates_from_rendered_xyz_mode(
 ) -> Vec<f64> {
     let (_, chroma, hue, j_hk) = attributes(model, xyz);
     // Solve Refl from the target rendered J_HK. A requested value is only
-    // accepted by the legacy direct-target branch used by callers that need
-    // to explicitly preserve a neutral; profile switches and color entry
-    // always pass `None` so the target coordinates describe the retained
-    // rendered color.
+    // accepted by the direct-target branch used by callers that need to
+    // explicitly preserve a neutral; profile switches and color entry always
+    // pass `None` so the target coordinates describe the rendered color.
     let (reflectance, neutral_match) =
         if solve_profile_refl && (profile != 3 || requested_reflectance.is_none()) {
             solve_neutral_reflectance_for_j_hk(model, profile, j_hk)
@@ -2003,10 +1999,9 @@ pub fn set_profile_from_output_srgb_converted(
     let model = model();
     let (linear, _) = output_srgb_to_xyz(red, green, blue);
     let xyz = target_xyz_from_output_srgb(profile, linear, profile == 3);
-    // The retained output-sRGB value is the canonical color for transitions
-    // sourced from the direct profile. Re-solve all target coordinates from
-    // that color; preserving the old direct Refl would reject colors whose
-    // target neutral curve has a different J_HK.
+    // The output-sRGB value is the canonical color for transitions sourced
+    // from the direct profile. Re-solve all target coordinates from that
+    // color so the target neutral curve uses its current J_HK.
     coordinates_from_rendered_xyz(model, profile, None, xyz)
 }
 
@@ -2928,12 +2923,23 @@ mod tests {
     }
 
     #[test]
+    fn fitted_radius_unit_boundary_contains_rec2020_blue_endpoint() {
+        let saturation = FITTED_RADIUS_K * FITTED_RADIUS_D.exp_m1();
+        assert!((saturation - 203.64174424420062).abs() < 1.0e-12);
+        let radius = (1.0 + saturation / FITTED_RADIUS_K).ln() / FITTED_RADIUS_D;
+        assert!((radius - 1.0).abs() < 1.0e-15);
+    }
+
+    #[test]
     fn normalized_hdr_xyz_scale_matches_shader_reference_scale() {
         let code = [0.3, 0.54, 0.47];
         let sdr = normalized_sample(1, code);
         let hdr = normalized_sample(2, code);
         for channel in 0..3 {
-            assert!((hdr.xyz[channel] - 2.03 * sdr.xyz[channel]).abs() < 1.0e-12);
+            assert!(
+                (hdr.xyz[channel] - NORMALIZED_HDR203_DIFFUSE_WHITE_SCALE * sdr.xyz[channel]).abs()
+                    < 1.0e-12
+            );
         }
     }
 

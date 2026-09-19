@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { initSync, picker_code_from_acescg, picker_evaluate, picker_evaluate_mode, picker_colorchecker, picker_colorchecker_mode, picker_from_encoded } from "../src/wasm/pkg/modcam16_color_core.js";
+import { initSync, picker_evaluate, picker_evaluate_mode, picker_colorchecker, picker_from_encoded } from "../src/wasm/pkg/modcam16_color_core.js";
 import { encodeLinearRgbaPng, encodePreview, encodePq, displayIcc } from "../src/preview_png.ts";
 import { J_HK_PEAK, J_REFERENCE_WHITE } from "../src/picker_math.ts";
 import { readPng } from "./png_reader.mjs";
@@ -20,14 +20,14 @@ function expectedSample(value, hdr) {
   return Math.round(255 * (linear <= .0031308 ? linear * 12.92 : 1.055 * linear ** (1 / 2.4) - .055));
 }
 
-test("physical white scale is independently derived with the 203-nit appearance context", () => {
+test("physical white anchors are independently derived with the 203-nit appearance context", () => {
   close(J_HK_PEAK, oracle.peak_jhk, 1e-9, "1000-nit JHK");
   close(J_REFERENCE_WHITE, 100 / J_HK_PEAK, 1e-12, "203-nit reference locator");
   close(encodePq(100), 0.5080784215, 1e-10, "ST2084 100 nits");
   close(encodePq(1000), 0.7518270962, 1e-10, "ST2084 1000 nits");
 });
 
-test("fixed authoring inverse and all forward views agree with Python OpenColorIO", () => {
+test("fixed Rec.2020 authoring inverse and all forward views agree with Python OpenColorIO", () => {
   for (const [index, code] of oracle.codes.entries()) {
     const canonical = picker_evaluate(2, ...code, .15);
     for (const view of [1, 4, 2, 0]) {
@@ -35,7 +35,7 @@ test("fixed authoring inverse and all forward views agree with Python OpenColorI
       assert.equal(values[0], 1, `valid code ${code}`);
       assert.deepEqual(values.slice(0, 26), canonical.slice(0, 26));
       for (let c = 0; c < 3; c++) {
-        close(values[23 + c], oracle.source_rec2020[index][c], 1e-8, `authoring Rec.2020 ${index}/${c}`);
+        close(values[23 + c], oracle.source_rec2020[index][c], 1e-8, `Rec.2020 authoring ${index}/${c}`);
         // At the 1000-nit endpoint the inverse shoulder is ill-conditioned:
         // OCIO float32 RGB/XYZ rounding amplifies into ~3.5e-5 relative AP1.
         const sceneTolerance = code[0] === 1 ? 1e-4 : 3e-5;
@@ -46,8 +46,8 @@ test("fixed authoring inverse and all forward views agree with Python OpenColorI
   }
 });
 
-test("authoring gamut accepts Rec.2020 colors outside P3 and rejects outside Rec.2020", () => {
-  const wider = picker_evaluate(2, .2, .21, .53, 0);
+test("Rec.2020 authoring gamut accepts colors outside P3 and rejects outside Rec.2020", () => {
+  const wider = picker_evaluate(2, .12, .35, .1875, 0);
   assert.equal(wider[0], 1);
   assert.ok(wider[23] >= 0 && wider[24] >= 0 && wider[25] >= 0);
   const rec2020ToXyz = [
@@ -66,40 +66,17 @@ test("authoring gamut accepts Rec.2020 colors outside P3 and rejects outside Rec
   assert.ok(outside.slice(1, 4).every(Number.isNaN));
 });
 
-test("Full Rec.2020 off requires the P3 authoring cube", () => {
-  const wider = picker_evaluate_mode(0, .2, .21, .53, 0, true, false);
-  const restricted = picker_evaluate_mode(0, .2, .21, .53, 0, false, false);
+test("Full Rec.2020 off requires P3 containment for limited Rec.2020 authoring", () => {
+  const wider = picker_evaluate_mode(0, .12, .35, .1875, 0, true);
+  const restricted = picker_evaluate_mode(0, .12, .35, .1875, 0, false);
   assert.equal(wider[0], 1);
   assert.equal(restricted[0], 0);
-  const aboveP3Peak = [.61, .97, .59];
-  assert.equal(picker_evaluate_mode(0, ...aboveP3Peak, 0, true, false)[0], 1);
-  assert.equal(picker_evaluate_mode(0, ...aboveP3Peak, 0, false, false)[0], 0);
-  const brightNeutral = picker_evaluate_mode(0, .8, .5, .5, 0, false, false);
+  const aboveP3Peak = [.624, .9125, .55];
+  assert.equal(picker_evaluate_mode(0, ...aboveP3Peak, 0, true)[0], 1);
+  assert.equal(picker_evaluate_mode(0, ...aboveP3Peak, 0, false)[0], 0);
+  const brightNeutral = picker_evaluate_mode(0, .8, .5, .5, 0, false);
   assert.equal(brightNeutral[0], 1);
   assert.ok(brightNeutral.slice(23, 26).every(value => value > 1));
-});
-
-test("Desaturate changes selected-view pixels but retains canonical picker values and all patches", () => {
-  const normal = picker_evaluate_mode(0, .38, .72, .63, .15, true, false);
-  const desaturated = picker_evaluate_mode(0, .38, .72, .63, .15, true, true);
-  assert.deepEqual(desaturated.slice(0, 26), normal.slice(0, 26));
-  assert.deepEqual(desaturated.slice(29), normal.slice(29));
-  assert.ok(desaturated.slice(26, 29).some((value, channel) => Math.abs(value - normal[26 + channel]) > 1e-5));
-  const patches = picker_colorchecker_mode(0, true);
-  assert.equal(patches.length, 18 * 7);
-  assert.ok(Array.from({ length: 18 }, (_, index) => patches[index * 7 + 6]).every(Boolean));
-});
-
-test("Desaturate clips the reported high-ACEScg color without changing availability", () => {
-  const solved = picker_code_from_acescg(25.2811, 29.6013, .0422);
-  assert.equal(solved[0], 1);
-  const code = picker_evaluate_mode(0, ...solved.slice(1), .15, true, false);
-  const desaturated = picker_evaluate_mode(0, ...solved.slice(1), .15, true, true);
-  assert.equal(code[0], 1);
-  assert.equal(desaturated[0], 1);
-  assert.deepEqual(desaturated.slice(0, 26), code.slice(0, 26));
-  assert.ok(desaturated.slice(26, 29).every(Number.isFinite));
-  assert.ok(desaturated.slice(26, 29).some(value => Math.abs(value) > 1e-9));
 });
 
 test("PNG formats, metadata, and pixel samples match independent OCIO presentation values", () => {
