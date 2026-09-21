@@ -91,6 +91,14 @@ const D50_TO_D65_CAT02: [[f32; 3]; 3] = [
     [-0.02119125, 0.99885744, 0.02614608],
     [0.001371287, 0.0044387075, 1.3127874],
 ];
+// ICC XYZ PCS uses the ICC D50 illuminant. Embedded DeviceToPCS output is
+// brought to the application's XYZ-D65 boundary with the ICC-recommended
+// linear Bradford adaptation, independently of the DNG CAT02 boundary.
+const ICC_D50_TO_D65_BRADFORD: [[f32; 3]; 3] = [
+    [0.9555126, -0.023072975, 0.06330908],
+    [-0.028324759, 1.0099429, 0.02105444],
+    [0.012328703, -0.020535307, 1.3307137],
+];
 const D50_WHITE: [f32; 3] = [0.96422, 1.0, 0.82521];
 #[cfg(test)]
 const D65_WHITE: [f32; 3] = [0.9504559, 1.0, 1.0890578];
@@ -1453,16 +1461,17 @@ fn parse_dng(data: &[u8]) -> Result<Pixels, String> {
             None => None,
         }
     };
-    let forward_matrix_used = forward_matrix.is_some();
-    let camera_to_xyz_d50 = if let Some(forward) = forward_matrix {
-        // ForwardMatrix maps white-balanced reference-camera values to D50.
-        // Undo the calibration/analog-balance transform after applying the
-        // neutral diagonal, preserving the native camera sample coordinates.
-        dng_forward_camera_to_xyz(forward, reference_to_camera, camera_neutral)
-            .or(no_forward_camera_to_xyz)
-    } else {
-        no_forward_camera_to_xyz
-    }
+    // ForwardMatrix maps white-balanced reference-camera values to D50 and
+    // owns any adaptation chosen by the profile creator. Only report it as
+    // used when the complete profile-defined transform succeeds. A malformed
+    // or singular ForwardMatrix follows the same Bradford ColorMatrix fallback
+    // as a missing one.
+    let (camera_to_xyz_d50, forward_matrix_used) = select_dng_camera_to_xyz_d50(
+        forward_matrix,
+        reference_to_camera,
+        camera_neutral,
+        no_forward_camera_to_xyz,
+    )
     .ok_or("DNG camera calibration is singular or invalid.")?;
     // The DNG camera-to-XYZ result is D50. A D50→D65 CAT02 step is the final
     // prepared-image color boundary; the inverse ACES output transform
@@ -1722,6 +1731,24 @@ fn dng_forward_camera_to_xyz(
     Some(mat_mul(forward, mat_mul(diagonal, inverse_reference)))
 }
 
+/// Select the profile-defined ForwardMatrix path only when its complete
+/// camera-to-D50 transform is usable. Otherwise select the already-constructed
+/// ColorMatrix/Bradford fallback and report the branch actually used.
+fn select_dng_camera_to_xyz_d50(
+    forward: Option<[[f32; 3]; 3]>,
+    reference_to_camera: [[f32; 3]; 3],
+    camera_neutral: [f32; 3],
+    color_matrix_fallback: Option<[[f32; 3]; 3]>,
+) -> Option<([[f32; 3]; 3], bool)> {
+    if let Some(camera_to_xyz_d50) = forward.and_then(|matrix| {
+        dng_forward_camera_to_xyz(matrix, reference_to_camera, camera_neutral)
+    }) {
+        Some((camera_to_xyz_d50, true))
+    } else {
+        color_matrix_fallback.map(|matrix| (matrix, false))
+    }
+}
+
 fn finite(v: [f32; 3]) -> bool {
     v.iter().all(|x| x.is_finite())
 }
@@ -1770,10 +1797,10 @@ fn icc_rgb_to_xyz_d65(rgb: &mut [[f32; 3]], icc: &[u8]) -> Result<(), String> {
         transform
             .transform_f32(&normalized, &mut xyz)
             .map_err(|e| e.to_string())?;
-        // ICC RGB profiles expose XYZ PCS values relative to D50.  Adapt
-        // those values to D65 and keep XYZ-D65 as the prepared boundary;
-        // display-referred data must not be reinterpreted as ACES AP0.
-        *px = mat(D50_TO_D65_CAT02, xyz);
+        // ICC RGB profiles expose XYZ PCS values relative to D50. Adapt those
+        // values to D65 with Bradford and keep XYZ-D65 as the prepared
+        // boundary; display-referred data must not be reinterpreted as AP0.
+        *px = mat(ICC_D50_TO_D65_BRADFORD, xyz);
     }
     Ok(())
 }
@@ -2636,10 +2663,9 @@ fn payload(
 }
 
 fn jhk_for_ap0(ap0: [f32; 3], profile: u32) -> f64 {
-    let ap1 = mat(AP0_TO_AP1, ap0);
-    let xyz = modcam16_color_core::aces_output::forward(
+    let xyz = modcam16_color_core::aces_output::forward_from_ap0(
         profile,
-        [ap1[0] as f64, ap1[1] as f64, ap1[2] as f64],
+        [ap0[0] as f64, ap0[1] as f64, ap0[2] as f64],
     );
     modcam16_color_core::j_hk_from_xyz(xyz)
 }
@@ -2888,13 +2914,12 @@ fn encode_preview_jpeg(width: usize, height: usize, pixels: &[u8]) -> Result<Vec
     Ok(output)
 }
 
-// Accurate CPU reference for the production WGSL preview path. The core API
-// accepts ACEScg, so preserve the same AP0 -> AP1 boundary on both backends.
+// Accurate CPU reference for the production WGSL preview path. Both backends
+// enter the ACES forward transform at its native AP0 boundary.
 fn preview_rgb_for_ap0(ap0: [f32; 3]) -> [f32; 3] {
-    let acescg = mat(AP0_TO_AP1, ap0);
-    let xyz = modcam16_color_core::aces_output::forward(
+    let xyz = modcam16_color_core::aces_output::forward_from_ap0(
         4,
-        [acescg[0] as f64, acescg[1] as f64, acescg[2] as f64],
+        [ap0[0] as f64, ap0[1] as f64, ap0[2] as f64],
     );
     mat(XYZ_TO_P3, [xyz[0] as f32, xyz[1] as f32, xyz[2] as f32]).map(srgb_encode_component)
 }
@@ -3782,6 +3807,45 @@ mod tests {
         // retain this assertion as a guard against applying that cast.
         let double_wb = mat(camera_to_xyz_d65, [1.0, 1.0, 1.0]);
         assert!((double_wb[0] - double_wb[2]).abs() > 0.2);
+    }
+
+    #[test]
+    fn dng_forward_matrix_selection_reports_success_and_fallback() {
+        let identity = identity3();
+        let fallback = [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]];
+        let (selected, used) = select_dng_camera_to_xyz_d50(
+            Some(identity),
+            identity,
+            [1.0; 3],
+            Some(fallback),
+        )
+        .expect("valid ForwardMatrix should be selected");
+        assert!(used);
+        assert_eq!(selected, identity);
+
+        let (selected, used) = select_dng_camera_to_xyz_d50(
+            Some(identity),
+            [[0.0; 3]; 3],
+            [1.0; 3],
+            Some(fallback),
+        )
+        .expect("singular ForwardMatrix should fall back");
+        assert!(!used);
+        assert_eq!(selected, fallback);
+
+        let (selected, used) = select_dng_camera_to_xyz_d50(None, identity, [1.0; 3], Some(fallback))
+            .expect("missing ForwardMatrix should use ColorMatrix fallback");
+        assert!(!used);
+        assert_eq!(selected, fallback);
+    }
+
+    #[test]
+    fn icc_bradford_boundary_maps_d50_to_d65() {
+        let adapted = mat(ICC_D50_TO_D65_BRADFORD, D50_WHITE);
+        assert!(adapted
+            .iter()
+            .zip(D65_WHITE)
+            .all(|(actual, expected)| (actual - expected).abs() < 2.0e-4));
     }
 
     #[test]

@@ -18,7 +18,15 @@ from picker_reference import PEAK, REFERENCE_J, P3, REC709, REC2020, code_xyz, n
 
 
 CONFIG = Path(__file__).parent / "reference" / "cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio"
+COLORCHECKER_REFERENCE = (
+    Path(__file__).parent.parent
+    / "references"
+    / "colorchecker"
+    / "ColorChecker24_After_Nov2014.txt"
+)
 HDR203_DIFFUSE_WHITE_SCALE = 2.03
+RICD_FLARE = 0.005
+RICD_SCALE = 0.18 / 0.185
 PROFILES = {
     "0": "ACES 2.0 - HDR 1000 nits (Rec.2020)",
     "1": "ACES 2.0 - SDR 100 nits (Rec.709)",
@@ -37,6 +45,91 @@ VECTORS = np.asarray(
     ],
     dtype=np.float32,
 )
+
+CAT02 = np.array(
+    [
+        [0.7328, 0.4296, -0.1624],
+        [-0.7036, 1.6975, 0.0061],
+        [0.0030, 0.0136, 0.9834],
+    ]
+)
+
+
+def _white_xyz(x: float, y: float) -> np.ndarray:
+    return np.array([x / y, 1.0, (1.0 - x - y) / y])
+
+
+D50_WHITE = _white_xyz(0.34567, 0.35850)
+ACES_WHITE = _white_xyz(0.32168, 0.33767)
+AP1_PRIMARIES = ((0.713, 0.293), (0.165, 0.830), (0.128, 0.044))
+
+
+def _rgb_to_xyz_matrix(primaries, white: np.ndarray) -> np.ndarray:
+    columns = np.array([_white_xyz(x, y) for x, y in primaries]).T
+    return columns @ np.diag(np.linalg.solve(columns, white))
+
+
+AP1_TO_XYZ = _rgb_to_xyz_matrix(AP1_PRIMARIES, ACES_WHITE)
+
+
+def _lab_d50_to_xyz(lab: np.ndarray) -> np.ndarray:
+    delta = 6.0 / 29.0
+    f_y = (lab[..., 0] + 16.0) / 116.0
+    f_x = f_y + lab[..., 1] / 500.0
+    f_z = f_y - lab[..., 2] / 200.0
+
+    def inverse(value: np.ndarray) -> np.ndarray:
+        return np.where(
+            value > delta,
+            value**3,
+            3.0 * delta**2 * (value - 4.0 / 29.0),
+        )
+
+    return np.stack(
+        [D50_WHITE[0] * inverse(f_x), inverse(f_y), D50_WHITE[2] * inverse(f_z)],
+        axis=-1,
+    )
+
+
+def _colorchecker_lab() -> tuple[list[str], np.ndarray]:
+    rows: dict[str, list[float]] = {}
+    in_data = False
+    for source_line in COLORCHECKER_REFERENCE.read_text(encoding="utf-8").splitlines():
+        line = source_line.strip()
+        if line == "BEGIN_DATA":
+            in_data = True
+            continue
+        if line == "END_DATA":
+            break
+        if not in_data or not line:
+            continue
+        name, *values = line.split()
+        rows[name] = [float(value.replace(",", ".")) for value in values]
+    if len(rows) != 24:
+        raise RuntimeError(f"Expected 24 ColorChecker records, got {len(rows)}")
+    active = [
+        "A1", "B1", "C1", "D1", "E1", "F1",
+        "A2", "B2", "C2", "D2", "E2", "F2",
+        "A3", "B3", "C3", "D3", "E3", "F3",
+    ]
+    return active, np.asarray([rows[name] for name in active], dtype=np.float64)
+
+
+def _colorchecker_scene_targets(hdr_inverse: ocio.CPUProcessor):
+    names, lab = _colorchecker_lab()
+    d50_to_aces_white = (
+        np.linalg.inv(CAT02)
+        @ np.diag((CAT02 @ ACES_WHITE) / (CAT02 @ D50_WHITE))
+        @ CAT02
+    )
+    xyz_d50_to_ap1 = np.linalg.inv(AP1_TO_XYZ) @ d50_to_aces_white
+    ap1 = _lab_d50_to_xyz(lab) @ xyz_d50_to_ap1.T
+    ricd = RICD_SCALE * (ap1 + RICD_FLARE)
+    perfect_diffuser = RICD_SCALE * (1.0 + RICD_FLARE)
+    target_xyz = np.asarray([[HDR203_DIFFUSE_WHITE_SCALE] * 3]) @ REC2020.T
+    target_scene = np.asarray(_apply(hdr_inverse, target_xyz))[0]
+    scene_gain = float(np.mean(target_scene) / perfect_diffuser)
+    return names, ricd * scene_gain, scene_gain
 
 
 def _view_group(config: ocio.Config, view_name: str) -> ocio.GroupTransform:
@@ -83,6 +176,23 @@ def main() -> None:
             "inverse_acescg": _apply(inverse, VECTORS),
         }
     hdr_inverse = config.getProcessor(_view_group(config, PROFILES["0"]), ocio.TRANSFORM_DIR_INVERSE).getDefaultCPUProcessor()
+    colorchecker_names, colorchecker_scene, colorchecker_gain = (
+        _colorchecker_scene_targets(hdr_inverse)
+    )
+    records["colorchecker"] = {
+        "names": colorchecker_names,
+        "scene_gain": colorchecker_gain,
+        "scene": colorchecker_scene.tolist(),
+        "views": {},
+    }
+    for profile_id, view_name in PROFILES.items():
+        forward = config.getProcessor(_view_group(config, view_name)).getDefaultCPUProcessor()
+        inverse_matrix = np.linalg.inv(
+            {"0": REC2020, "1": REC709, "2": P3, "4": P3}[profile_id]
+        )
+        records["colorchecker"]["views"][profile_id] = (
+            np.asarray(_apply(forward, colorchecker_scene)) @ inverse_matrix.T
+        ).tolist()
     codes = [[0, .5, .5], [REFERENCE_J, .5, .5], [100 / PEAK, .5, .5],
              [1, .5, .5], [.38, .86, .62], [.3, .38, .65], [.6, .55, .53], [.1, .48, .52]]
     xyz = np.array([code_xyz(code) for code in codes])

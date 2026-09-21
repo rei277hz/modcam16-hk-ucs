@@ -724,14 +724,24 @@ pub fn inverse_from_xyz_d65(profile: u32, xyz: [f64; 3]) -> [f64; 3] {
 /// Apply the exact ACES 2.0 forward output fixed function from its native
 /// ACES2065-1/AP0 scene-reference boundary to display-referred XYZ-D65.
 pub fn forward_from_ap0(profile: u32, ap0: [f64; 3]) -> [f64; 3] {
+    mat(
+        &parameters(profile).target_to_xyz,
+        forward_target_rgb_from_ap0(profile, ap0),
+    )
+}
+
+/// Evaluate the ACES 2.0 forward output fixed function through its target RGB
+/// boundary, before the final target-RGB-to-XYZ-D65 matrix. This is used when
+/// a caller needs to apply target-gamut clipping without an XYZ→RGB→XYZ
+/// roundabout.
+pub(crate) fn forward_target_rgb_from_ap0(profile: u32, ap0: [f64; 3]) -> [f64; 3] {
     let p = parameters(profile);
     let jmh = rgb_to_jmh_with_matrix(ap0, &AP0_TO_LMS);
     let chroma = chroma_forward(jmh, p);
     let compressed = gamut_compress_forward(chroma, chroma[0], reach_sample(jmh[2], p), p);
     // ACES_OutputTransform20 applies its output range after the fixed
     // function, before the target RGB-to-XYZ matrix.
-    let target_rgb = clamp3(jmh_to_target_rgb(compressed, p), 0.0, p.input_max);
-    mat(&p.target_to_xyz, target_rgb)
+    clamp3(jmh_to_target_rgb(compressed, p), 0.0, p.input_max)
 }
 
 /// Apply the exact ACES 2.0 forward output group processor from ACEScg/AP1.
