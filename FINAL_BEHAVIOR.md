@@ -47,25 +47,70 @@ display-referred RGB source first uses its RGB→XYZ-D65 adapter, then calls thi
 API. Adapters never duplicate ACES fixed-function code, and there are no
 separate ACEScg/AP0/Rec.2020 inverse ACES implementations.
 
+Project-owned conversions between XYZ-D65 and the ACES white use CAT02. This
+policy does not replace matrices that are part of the canonical ACES/OCIO
+transform itself. Likewise, CAT16 remains part of the modCAM16-HK appearance
+model and the Painter white-balance implementation; it is not a selectable
+boundary adaptation.
+
+Production color paths do not convert A→B→A merely to recover a value that
+was already available in A. AP0 inputs enter the native AP0 forward transform,
+and output-gamut clipping operates on the forward transform's target RGB before
+a single conversion to XYZ. Intentional one-way conversions at an input or
+output boundary, such as ACEScg input to AP0 processing or AP0 solver output to
+an ACEScg EXR, remain explicit.
+
 ## RAW/DNG interpretation
 
 RAW processing includes DNG decoding, active-area handling, black/white
 normalization, demosaicing, supported opcodes, calibration interpolation,
 white balance, baseline exposure, and orientation.
 
-The final camera transform is:
+The camera-to-XYZ-D50 stage follows the selected DNG camera-profile path.
+
+With a valid ForwardMatrix:
 
 ```text
-camera RGB → XYZ-D50 → CAT02 D50→D65 → linear XYZ-D65
+camera RGB
+→ camera-space white-balance and calibration factors
+→ profile ForwardMatrix
+→ XYZ-D50
 ```
+
+The ForwardMatrix and its required factors define this camera-to-D50 stage. No
+generic Bradford or CAT02 operation is inserted in place of the profile's
+adaptation.
+
+Without a usable ForwardMatrix:
+
+```text
+camera RGB
+→ inverse ColorMatrix
+→ linear Bradford from the selected camera white to D50
+→ XYZ-D50
+```
+
+Both branches then use the same application boundary conversion:
+
+```text
+XYZ-D50 → CAT02 D50→D65 → linear XYZ-D65
+```
+
+CAT02 at this final boundary is an application policy, not a requirement
+inferred from the presence of a ForwardMatrix. The same XYZ-D50 value therefore
+produces the same XYZ-D65 value regardless of the camera-profile branch that
+created it. A present but unusable ForwardMatrix falls back to the ColorMatrix
+path and is reported as not used.
 
 The prepared DNG raster is XYZ-D65. It does not round-trip through AP0 or
 ACEScg, and negative or above-one XYZ values are not clamped.
 
 The same XYZ-D65 boundary is used for ordinary display-referred PNG/JPEG,
 manual RGB overrides, ICC RGB profiles, and HEIC/HEIF (including gain-map)
-pixels. ICC XYZ-PCS values are adapted from D50 to D65. ACEScg/AP0 choices are
-available only for EXR scene-reference input.
+pixels. ICC DeviceToPCS processing remains profile-defined; the resulting
+XYZ-PCS values are adapted from D50 to D65 with Bradford. Generated SDR ICC
+profiles likewise use Bradford for their D65-to-D50 colorants and `chad` tag.
+ACEScg/AP0 choices are available only for EXR scene-reference input.
 
 For this application, DNG camera white uses the fixed 203-nit workflow:
 
@@ -98,6 +143,40 @@ The selected view determines the displayed encoding:
 The gamut slice, ColorChecker layer, picked-color preview, image preview, and
 loupe use the selected view’s after-transform display-linear values.
 
+## ColorChecker references
+
+ColorChecker targets use the official post-November-2014 X-Rite ColorChecker
+Classic CIELAB D50 reference data. The checked-in provenance asset contains all
+24 patches; the picker continues to expose the 18 chromatic patches in its
+established UI order. The six neutral patches remain reference data and are not
+rendered as picker dots.
+
+Each active patch is converted to its ACEScg scene-reference target through one
+direct white adaptation:
+
+```text
+official Lab D50
+→ XYZ D50
+→ CAT02 D50→ACES white (x=0.32168, y=0.33767)
+→ ACEScg/AP1
+→ RICD flare and scale
+→ calculated scene-side 203-nit placement gain
+```
+
+The RICD operation is applied once in scene-linear ACEScg:
+
+```text
+RICD target = (0.18 / 0.185) × (ACEScg + 0.005)
+```
+
+The 203-nit placement gain is calculated from the canonical ACES 2.0 HDR
+1000-nit Rec.2020 inverse. It maps the RICD perfect-diffuser scene target to the
+scene value whose forward output is display-linear Rec.2020 `(2.03, 2.03,
+2.03)`, where 1.0 represents 100 nits. The gain is applied before the selected
+forward view transform. ColorChecker references never use a post-forward RGB
+multiplier and do not pass through an intermediate D65 adaptation before being
+adapted to the ACES white.
+
 The interactive gamut-slice surface is the **Color trackpad**. The vertical
 lightness control is the **J′ trackwheel**. Both use the shared track-motion
 velocity and acceleration profile while retaining their respective two-axis
@@ -109,5 +188,12 @@ and one-axis coordinate mappings.
 - Scene ACES inputs never call the inverse output transform.
 - Display-referred RGB inputs always pass through RGB→XYZ-D65 before the one
   canonical inverse API.
+- Project-owned ICC PCS adaptations use Bradford; project-owned non-ICC
+  white-point boundary adaptations use CAT02 except for the DNG ColorMatrix
+  fallback's specified linear-Bradford camera-white→D50 stage.
+- A successful DNG ForwardMatrix is used as the profile-defined camera→D50
+  transform, followed by the same CAT02 D50→D65 boundary as the fallback.
 - DNG diagnostics and source modes identify XYZ-D65, never AP0.
 - DNG analysis uses the prepared XYZ-D65 raster.
+- Production transform paths contain no redundant A→B→A color-space
+  roundabouts.

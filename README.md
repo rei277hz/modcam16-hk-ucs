@@ -27,6 +27,23 @@ before the inverse **ACES 2.0 HDR
 view supplies the slice's display-linear pixels and matching PNG encoding. A
 view change does not change coordinates, ACEScg, Background, or snapping.
 
+ColorChecker dots use the official post-November-2014 X-Rite ColorChecker24
+Lab/D50 reference. The complete 24-patch source file and provenance metadata
+are checked in under `references/colorchecker/`; the UI retains its established
+18 chromatic patches. Each patch is converted through direct CAT02
+D50→ACES-white adaptation into ACEScg, receives the ST 2065-1 RICD flare/scale,
+and then a calculated scene-linear gain that places the RICD perfect diffuser
+at 203 nits through the HDR Rec.2020 ACES 2.0 view. The adjustment occurs before
+the forward view transform, not as a post-forward RGB multiplier.
+
+DNG development keeps the camera-profile boundary explicit. A valid
+`ForwardMatrix` supplies the profile-defined camera→XYZ-D50 transform after
+white-balance and calibration factors; no generic CAT replaces that matrix.
+When `ForwardMatrix` is absent or unusable, the ColorMatrix path uses linear
+Bradford from the selected camera white to D50. Both paths then use the common
+CAT02 D50→D65 boundary before the prepared raster enters the application.
+Embedded ICC XYZ-PCS/D50 values use Bradford for their D50→D65 conversion.
+
 The Rec.2020 authoring mode defaults to `Rec.2020 (P3-D65 Limited)`, which adds a P3
 `[0, 10 / 2.03]` per-channel cube requirement to Rec.2020-authored picker/slice
 availability. Clicking the in-slice mode switch changes it to full `Rec.2020`,

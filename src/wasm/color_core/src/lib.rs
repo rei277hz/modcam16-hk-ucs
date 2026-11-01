@@ -80,59 +80,83 @@ const XYZ_TO_REC2020: [[f64; 3]; 3] = [
     [0.0176398574453108, -0.0427706132578085, 0.9421031212354739],
 ];
 
-// Linear ACEScg/AP1 (D60) from the adapted D65 XYZ reference.  ColorChecker
-// dots are anchored to this absolute scene-linear value before the selected
-// ACES 2.0 output transform is evaluated.
+// Linear ACEScg/AP1 (ACES white) from the D65 XYZ reference used by
+// display-referred image adapters. This project-owned D65→ACES-white
+// adaptation is CAT02; canonical ACES output-transform matrices remain in
+// `aces_output.rs`.
 const XYZ_D65_TO_ACESCG: [[f64; 3]; 3] = [
-    [1.660585326491183, -0.315295560825870, -0.241509327608377],
-    [-0.659926063224154, 1.608391469566054, 0.017298594705446],
-    [0.009002569137834, -0.003566876390337, 0.913643312763104],
+    [1.658854308471042, -0.311856975397419, -0.243156007125715],
+    [-0.662283287107587, 1.612199570871322, 0.015859126603063],
+    [0.011480566457477, -0.009236324924244, 0.916686513449130],
 ];
 
-// Linear ACEScg/AP1 (D60) to adapted D65 XYZ. This is the inverse of
+// Direct CIELAB-D50/XYZ-D50 to ACEScg/AP1 conversion. The matrix combines
+// CAT02 adaptation from the CIE D50 white to the ACES white
+// (x=.32168, y=.33767) with the ACEScg primary matrix. ColorChecker targets
+// use this direct path; they do not pass through the display D65 boundary.
+const XYZ_D50_TO_ACESCG: [[f64; 3]; 3] = [
+    [1.598623729846882, -0.361202746046775, -0.218385830505367],
+    [-0.669874208830724, 1.629840132527303, 0.019462969460427],
+    [0.012473064126380, -0.005493376059907, 1.203927293516246],
+];
+
+// Linear ACEScg/AP1 (ACES white) to D65 XYZ. This is the inverse of
 // `XYZ_D65_TO_ACESCG` and is used by the direct sRGB profile, where the
 // ACES 2.0 output transform is intentionally bypassed.
 const ACESCG_TO_XYZ_D65: [[f64; 3]; 3] = [
-    [0.6522375418862886, 0.1282361359997123, 0.1699822491656707],
-    [0.2676721801253367, 0.6743399888015509, 0.0579878310731121],
-    [-0.0053818157663876, 0.0013690602090956, 1.0930705063171706],
+    [0.652418717671913, 0.127179925537538, 0.170857283842221],
+    [0.268064059194271, 0.672464478992618, 0.059471461813111],
+    [-0.005469928510498, 0.005182799976975, 1.089344879293401],
 ];
 
-// Official post-2014 ColorChecker 18-patch Lab/D50 reference values used by
-// modcam16_palette.colorchecker. Derived patch attributes are calculated at
-// runtime; these are source measurements, not a precomputed color table.
-const COLORCHECKER_LAB_D50: [[f64; 3]; 18] = [
+// All 24 patches from the official post-November-2014 X-Rite ColorChecker24
+// Lab/D50 reference file, in its native A1..A4, B1..B4, ... F1..F4 order.
+// The downloaded source and provenance metadata are checked in under
+// references/colorchecker/.
+const COLORCHECKER24_LAB_D50: [[f64; 3]; 24] = [
     [37.54, 14.37, 14.92],
-    [64.66, 19.27, 17.50],
-    [49.32, -3.82, -22.54],
-    [43.46, -12.74, 22.72],
-    [54.94, 9.61, -24.79],
-    [70.48, -32.26, -0.37],
     [62.73, 35.83, 56.50],
-    [39.43, 10.75, -45.17],
-    [50.57, 48.64, 16.67],
-    [30.10, 22.54, -20.87],
-    [71.77, -24.13, 58.19],
-    [71.51, 18.24, 67.37],
     [28.37, 15.42, -49.80],
+    [95.19, -1.03, 2.93],
+    [64.66, 19.27, 17.50],
+    [39.43, 10.75, -45.17],
     [54.38, -39.72, 32.27],
+    [81.29, -0.57, 0.44],
+    [49.32, -3.82, -22.54],
+    [50.57, 48.64, 16.67],
     [42.43, 51.05, 28.62],
+    [66.89, -0.75, -0.06],
+    [43.46, -12.74, 22.72],
+    [30.10, 22.54, -20.87],
     [81.80, 2.67, 80.41],
+    [50.76, -0.13, 0.14],
+    [54.94, 9.61, -24.79],
+    [71.77, -24.13, 58.19],
     [50.63, 51.28, -14.12],
+    [35.63, -0.46, -0.48],
+    [70.48, -32.26, -0.37],
+    [71.51, 18.24, 67.37],
     [49.57, -29.71, -28.32],
+    [20.64, 0.07, -0.46],
 ];
 
-// CAT02 chromatic adaptation from the ColorChecker's D50 reference white to
-// the D65 reference used by the appearance model.
-const D50_TO_D65_CAT02: [[f64; 3]; 3] = [
-    [
-        0.9599086057258068,
-        -0.02931106901521631,
-        0.06569604282439087,
-    ],
-    [-0.02119125332801955, 0.9988574221592446, 0.0261460794841881],
-    [0.0013712869836183, 0.00443870751911378, 1.3127874597917268],
+// Preserve the picker's established row-major chromatic-patch order while
+// retaining the neutral column in the authoritative source table.
+const COLORCHECKER_ACTIVE_INDICES: [usize; 18] = [
+    0, 4, 8, 12, 16, 20, 1, 5, 9, 13, 17, 21, 2, 6, 10, 14, 18, 22,
 ];
+
+const fn active_colorchecker_lab_d50() -> [[f64; 3]; 18] {
+    let mut active = [[0.0; 3]; 18];
+    let mut index = 0;
+    while index < COLORCHECKER_ACTIVE_INDICES.len() {
+        active[index] = COLORCHECKER24_LAB_D50[COLORCHECKER_ACTIVE_INDICES[index]];
+        index += 1;
+    }
+    active
+}
+
+const COLORCHECKER_LAB_D50: [[f64; 3]; 18] = active_colorchecker_lab_d50();
 
 const CAT02: [[f64; 3]; 3] = [
     [0.7328, 0.4296, -0.1624],
@@ -888,9 +912,7 @@ pub fn render_rows_normalized(
 pub fn colorchecker_points_normalized(profile: u32) -> Vec<f64> {
     let mut output = Vec::with_capacity(COLORCHECKER_LAB_D50.len() * 9);
     for lab in COLORCHECKER_LAB_D50 {
-        let xyz_d50 = lab_d50_to_xyz(lab);
-        let xyz_d65 = mat(&D50_TO_D65_CAT02, xyz_d50);
-        let acescg = mat(&XYZ_D65_TO_ACESCG, xyz_d65);
+        let acescg = colorchecker_scene_target(lab);
         let profile_xyz = if profile == 3 {
             mat(&ACESCG_TO_XYZ_D65, acescg)
         } else {
@@ -1146,6 +1168,31 @@ fn lab_d50_to_xyz(lab: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+const COLORCHECKER_RICD_FLARE: f64 = 0.005;
+const COLORCHECKER_RICD_SCALE: f64 = 0.18 / (0.18 + COLORCHECKER_RICD_FLARE);
+const COLORCHECKER_HDR_DIFFUSE_WHITE: f64 = 2.03;
+
+fn colorchecker_ricd_perfect_diffuser() -> f64 {
+    COLORCHECKER_RICD_SCALE * (1.0 + COLORCHECKER_RICD_FLARE)
+}
+
+/// Scene-linear exposure that places the RICD perfect diffuser at 203 nits
+/// through the fixed ACES 2.0 HDR 1000-nit Rec.2020 output transform.
+fn colorchecker_scene_gain() -> f64 {
+    let target_xyz = mat(&REC2020_TO_XYZ, [COLORCHECKER_HDR_DIFFUSE_WHITE; 3]);
+    let target_scene = aces_output::inverse_from_xyz_d65(0, target_xyz);
+    let target_neutral = (target_scene[0] + target_scene[1] + target_scene[2]) / 3.0;
+    target_neutral / colorchecker_ricd_perfect_diffuser()
+}
+
+/// Convert one official post-November-2014 Lab/D50 patch to its ACEScg RICD
+/// scene target and apply the independent 203-nit perfect-diffuser placement.
+fn colorchecker_scene_target(lab_d50: [f64; 3]) -> [f64; 3] {
+    let acescg = mat(&XYZ_D50_TO_ACESCG, lab_d50_to_xyz(lab_d50));
+    let gain = colorchecker_scene_gain();
+    acescg.map(|value| COLORCHECKER_RICD_SCALE * (value + COLORCHECKER_RICD_FLARE) * gain)
+}
+
 /// Solve a profile-local neutral coordinate for a target J_HK.
 ///
 /// The second tuple member distinguishes an exact in-range solve from a
@@ -1280,24 +1327,16 @@ fn transform_from_acescg(profile: u32, acescg: [f64; 3]) -> [f64; 3] {
     }
 }
 
-// Cross-workflow conversions use the SDR Rec.709 ACES view as their bridge.
-// Profile 3 itself is a direct linear Rec.709 workflow, so its ordinary
-// ACEScg conversion is only used for same-workflow helpers. When crossing
-// between direct sRGB and an ACES view, these helpers make the mandated view
-// transform explicit.
-fn acescg_to_rec709_view_xyz(acescg: [f64; 3]) -> [f64; 3] {
-    transform_from_acescg(1, acescg)
-}
-
 fn acescg_to_srgb_xyz(acescg: [f64; 3]) -> [f64; 3] {
-    let view_xyz = acescg_to_rec709_view_xyz(acescg);
-    let output = xyz_to_source(3, view_xyz);
-    let clipped = [
-        output[0].clamp(0.0, 1.0),
-        output[1].clamp(0.0, 1.0),
-        output[2].clamp(0.0, 1.0),
-    ];
-    source_to_xyz(3, clipped)
+    let target_rgb = aces_output::forward_target_rgb_from_ap0(
+        1,
+        aces_output::acescg_to_ap0(acescg),
+    );
+    mat(&REC709_TO_XYZ, [
+        target_rgb[0].clamp(0.0, 1.0),
+        target_rgb[1].clamp(0.0, 1.0),
+        target_rgb[2].clamp(0.0, 1.0),
+    ])
 }
 
 fn srgb_to_acescg(linear: [f64; 3]) -> [f64; 3] {
@@ -1320,13 +1359,18 @@ fn decode_srgb(value: f64) -> f64 {
 
 fn sample(model: Model, profile: u32, j_hk: f64, hue: f64, saturation: f64) -> Sample {
     let chroma = saturation / 100.0 * j_hk * j_hk / HK_COEFFICIENT;
-    // Invert the appearance model to obtain A, then run A through the
-    // selected forward view transform again. The latter is the color exposed
-    // to the rest of the pipeline and makes the f(A) side of the J_HK
-    // constraint explicit instead of relying on the intermediate inverse XYZ.
+    // The appearance inverse produces the target XYZ, then the selected ACES
+    // view is evaluated to apply its profile-specific gamut mapping. This is
+    // an intentional nonlinear reconstruction, not a redundant matrix bridge.
     let inverse_xyz = modcam_to_xyz(model, j_hk, chroma, hue);
     let acescg = transform_to_acescg(profile, inverse_xyz);
-    let xyz = transform_from_acescg(profile, acescg);
+    let xyz = if profile == 3 {
+        // The direct workflow has no nonlinear view to reconstruct; retain the
+        // XYZ endpoint instead of applying the inverse CAT02 matrix pair.
+        inverse_xyz
+    } else {
+        transform_from_acescg(profile, acescg)
+    };
     let source_rgb = xyz_to_source(profile, xyz);
     let source_valid = finite3(source_rgb) && source_cone_valid(profile, source_rgb, xyz);
     let rendered_j_hk = attributes(model, xyz).3;
@@ -1649,6 +1693,9 @@ pub fn convert_neutral_profile(
 ) -> Vec<f64> {
     if !source_neutral.is_finite() || !(0.0..=BACKGROUND_MAX).contains(&source_neutral) {
         return vec![0.0, f64::NAN];
+    }
+    if source_profile == target_profile {
+        return vec![1.0, source_neutral];
     }
     let source_rgb = [source_neutral; 3];
     let acescg = if source_profile == 3 && target_profile != 3 {
@@ -2130,9 +2177,7 @@ pub fn colorchecker_points_adapted(profile: u32, temp: f64, tint: f64) -> Vec<f6
     let model = model();
     let mut output = Vec::with_capacity(COLORCHECKER_LAB_D50.len() * 12);
     for lab in COLORCHECKER_LAB_D50 {
-        let xyz_d50 = lab_d50_to_xyz(lab);
-        let xyz_d65 = mat(&D50_TO_D65_CAT02, xyz_d50);
-        let acescg_target = mat(&XYZ_D65_TO_ACESCG, xyz_d65);
+        let acescg_target = colorchecker_scene_target(lab);
         output.extend_from_slice(&colorchecker_record_from_acescg_adapted(
             model,
             profile,
@@ -2657,9 +2702,7 @@ mod tests {
                 assert!(record[3..9].iter().all(|value| (0.0..=1.0).contains(value)));
                 assert!(record[9] == 0.0 || record[9] == 1.0);
 
-                let xyz_d50 = lab_d50_to_xyz(COLORCHECKER_LAB_D50[index]);
-                let xyz_d65 = mat(&D50_TO_D65_CAT02, xyz_d50);
-                let target = mat(&XYZ_D65_TO_ACESCG, xyz_d65);
+                let target = colorchecker_scene_target(COLORCHECKER_LAB_D50[index]);
                 let rendered = transform_from_acescg(profile, target);
                 let (_, chroma, hue, j_hk) = attributes(m, rendered);
                 let expected_saturation = 100.0 * HK_COEFFICIENT * chroma / (j_hk * j_hk);
@@ -2674,6 +2717,80 @@ mod tests {
                     assert!((record[6 + channel] - expected_srgb[channel]).abs() < 2.0e-12);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn official_post_2014_reference_matches_active_patch_subset() {
+        let source =
+            include_str!("../../../../references/colorchecker/ColorChecker24_After_Nov2014.txt");
+        let mut in_data = false;
+        let mut records = Vec::new();
+        for line in source.lines() {
+            let line = line.trim();
+            if line == "BEGIN_DATA" {
+                in_data = true;
+                continue;
+            }
+            if line == "END_DATA" {
+                break;
+            }
+            if !in_data || line.is_empty() {
+                continue;
+            }
+            let fields: Vec<_> = line.split_whitespace().collect();
+            assert_eq!(fields.len(), 4, "unexpected reference row: {line}");
+            let parse = |value: &str| value.replace(',', ".").parse::<f64>().unwrap();
+            records.push((
+                fields[0],
+                [parse(fields[1]), parse(fields[2]), parse(fields[3])],
+            ));
+        }
+        assert_eq!(records.len(), 24);
+        for (index, (_, official)) in records.iter().enumerate() {
+            assert_eq!(
+                *official, COLORCHECKER24_LAB_D50[index],
+                "source record {index}"
+            );
+        }
+
+        let active_names = [
+            "A1", "B1", "C1", "D1", "E1", "F1", "A2", "B2", "C2", "D2", "E2", "F2", "A3", "B3",
+            "C3", "D3", "E3", "F3",
+        ];
+        for (index, name) in active_names.into_iter().enumerate() {
+            let (_, official) = records.iter().find(|record| record.0 == name).unwrap();
+            assert_eq!(*official, COLORCHECKER_LAB_D50[index], "patch {name}");
+        }
+        for neutral in ["A4", "B4", "C4", "D4", "E4", "F4"] {
+            assert!(records.iter().any(|record| record.0 == neutral));
+            assert!(!active_names.contains(&neutral));
+        }
+    }
+
+    #[test]
+    fn colorchecker_uses_direct_cat02_d50_to_aces_white() {
+        let xyz_d50 = lab_d50_to_xyz([100.0, 0.0, 0.0]);
+        let acescg = mat(&XYZ_D50_TO_ACESCG, xyz_d50);
+        for channel in acescg {
+            assert!((channel - 1.0).abs() < 2.0e-12, "neutral channel={channel}");
+        }
+    }
+
+    #[test]
+    fn colorchecker_ricd_scene_gain_places_perfect_diffuser_at_203_nits() {
+        let perfect = colorchecker_ricd_perfect_diffuser();
+        assert!((perfect - 0.9778378378378378).abs() < 2.0e-15);
+
+        let gain = colorchecker_scene_gain();
+        assert!((gain - 2.0138005459530484).abs() < 3.0e-6, "gain={gain}");
+        let output_xyz = aces_output::forward(0, [perfect * gain; 3]);
+        let output_rec2020 = mat(&XYZ_TO_REC2020, output_xyz);
+        for channel in output_rec2020 {
+            assert!(
+                (channel - COLORCHECKER_HDR_DIFFUSE_WHITE).abs() < 3.0e-6,
+                "display channel={channel}"
+            );
         }
     }
 
@@ -2697,12 +2814,13 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_colorchecker_reference_keeps_its_visible_forward_color() {
+    fn colorchecker_references_keep_visible_forward_colors() {
         let points = colorchecker_points(0);
-        let cyan = &points[17 * 10..18 * 10];
-        assert_eq!(cyan[9], 0.0);
-        assert!(cyan[..9].iter().all(|value| value.is_finite()));
-        assert!(cyan[3..9].iter().any(|value| *value > 0.0));
+        assert!(points.chunks_exact(10).all(|record| {
+            (record[9] == 0.0 || record[9] == 1.0)
+                && record[..9].iter().all(|value| value.is_finite())
+                && record[3..9].iter().any(|value| *value > 0.0)
+        }));
     }
 
     #[test]
@@ -3087,12 +3205,9 @@ mod tests {
         let m = model();
         for profile in [0, 1, 2, 4] {
             for lab in COLORCHECKER_LAB_D50 {
-                let xyz_d50 = lab_d50_to_xyz(lab);
-                let xyz_d65 = mat(&D50_TO_D65_CAT02, xyz_d50);
-                let target = mat(&XYZ_D65_TO_ACESCG, xyz_d65);
-                let encoded = encode_display_rgb(target);
-                let coordinates =
-                    set_profile_from_acescg_srgb(profile, 0.5, encoded[0], encoded[1], encoded[2]);
+                let target = colorchecker_scene_target(lab);
+                let rendered = transform_from_acescg(profile, target);
+                let coordinates = coordinates_from_rendered_xyz(m, profile, None, rendered);
                 let reference = colorchecker_record_from_acescg(m, profile, target);
                 assert!((coordinates[1] - reference[2]).abs() < 2.0e-8);
                 assert!((coordinates[2] - reference[0]).abs() < 2.0e-8);
@@ -3118,19 +3233,23 @@ mod tests {
                     let converted =
                         convert_neutral_profile(source_profile, target_profile, source_neutral);
                     assert!(converted[0] > 0.5);
-                    let source_xyz = source_to_xyz(source_profile, [source_neutral; 3]);
-                    let acescg = if source_profile == 3 && target_profile != 3 {
-                        srgb_to_acescg([source_neutral; 3])
+                    let expected = if source_profile == target_profile {
+                        source_neutral
                     } else {
-                        transform_to_acescg(source_profile, source_xyz)
+                        let source_xyz = source_to_xyz(source_profile, [source_neutral; 3]);
+                        let acescg = if source_profile == 3 {
+                            srgb_to_acescg([source_neutral; 3])
+                        } else {
+                            transform_to_acescg(source_profile, source_xyz)
+                        };
+                        let target_xyz = if target_profile == 3 {
+                            acescg_to_srgb_xyz(acescg)
+                        } else {
+                            transform_from_acescg(target_profile, acescg)
+                        };
+                        neutral_scalar(xyz_to_source(target_profile, target_xyz))
+                            .expect("neutral target")
                     };
-                    let target_xyz = if target_profile == 3 && source_profile != 3 {
-                        acescg_to_srgb_xyz(acescg)
-                    } else {
-                        transform_from_acescg(target_profile, acescg)
-                    };
-                    let expected = neutral_scalar(xyz_to_source(target_profile, target_xyz))
-                        .expect("neutral target");
                     assert!((converted[1] - expected.clamp(0.0, BACKGROUND_MAX)).abs() < 1.0e-12);
                 }
             }

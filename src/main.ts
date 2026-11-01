@@ -865,6 +865,7 @@ function schedule() {
 }
 function parsePatches(values: Float64Array) {
   if (values.length !== PATCH_NAMES.length * 7) return;
+  const hadPatches = currentPatches.length > 0;
   const patches: Patch[] = [];
   for (let i = 0; i < PATCH_NAMES.length; i++) {
     const o = i * 7;
@@ -880,7 +881,14 @@ function parsePatches(values: Float64Array) {
   currentPatches = patches;
   activePatch = null;
   activeTarget = null;
-  updatePatchCandidate(false);
+  if (hadPatches) {
+    updatePatchCandidate(false);
+  } else {
+    colorTrackpad.dataset.snapTarget = "none";
+    colorTrackpad.dataset.jSnapTarget = "none";
+  }
+  colorTrackpad.dataset.colorcheckerRingCount = String(currentPatches.length);
+  updatePatchLocators();
   // The initial canvas was painted before the asynchronous ColorChecker
   // response arrived.  Repaint now so dots and their dim rings are visible
   // without requiring a picker gesture.
@@ -993,7 +1001,10 @@ function setFromHex() {
     setAllCode(realCode);
     activePatch = null;
     activeTarget = null;
+    colorTrackpad.dataset.snapTarget = "none";
+    colorTrackpad.dataset.jSnapTarget = "none";
     updatePatchLocators();
+    drawIndicators();
     schedule();
     return;
   }

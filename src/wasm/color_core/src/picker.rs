@@ -409,19 +409,11 @@ pub fn picker_gpu_parameters() -> Vec<f32> {
 pub fn picker_colorchecker_mode(view: u32) -> Vec<f64> {
     let mut output = Vec::with_capacity(126);
     for lab in COLORCHECKER_LAB_D50 {
-        let scene = mat(
-            &XYZ_D65_TO_ACESCG,
-            mat(&D50_TO_D65_CAT02, lab_d50_to_xyz(lab)),
-        );
+        let scene = colorchecker_scene_target(lab);
         let xyz = aces_output::forward(0, scene).map(|v| v / HDR203_DIFFUSE_WHITE_SCALE);
         let (code, _domain_valid) = scaled_jhk_from_xyz(xyz, PICKER_J_PEAK);
         output.extend(code);
-        let sample = source_sample_mode(code, true);
-        output.extend(if sample.valid {
-            view_rgb(view, sample.acescg)
-        } else {
-            [0.0; 3]
-        });
+        output.extend(view_rgb(view, scene));
         output.push(1.0);
     }
     output
@@ -431,10 +423,7 @@ pub fn picker_colorchecker_mode(view: u32) -> Vec<f64> {
 pub fn picker_colorchecker() -> Vec<f64> {
     let mut output = Vec::with_capacity(180);
     for lab in COLORCHECKER_LAB_D50 {
-        let scene = mat(
-            &XYZ_D65_TO_ACESCG,
-            mat(&D50_TO_D65_CAT02, lab_d50_to_xyz(lab)),
-        );
+        let scene = colorchecker_scene_target(lab);
         let xyz = aces_output::forward(0, scene).map(|v| v / HDR203_DIFFUSE_WHITE_SCALE);
         let (code, domain_valid) = scaled_jhk_from_xyz(xyz, PICKER_J_PEAK);
         output.extend(code);
@@ -667,7 +656,10 @@ mod tests {
         assert_eq!(valid[0], 1.0);
         let rounded_xyz = xyz_white.map(|value| value as f32 as f64);
         let rounded = picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
-            rounded_xyz[0], rounded_xyz[1], rounded_xyz[2], false,
+            rounded_xyz[0],
+            rounded_xyz[1],
+            rounded_xyz[2],
+            false,
         );
         assert_eq!(rounded[0], 1.0);
         let above = xyz_white.map(|v| v * 1.001);

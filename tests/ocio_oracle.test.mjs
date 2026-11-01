@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   initSync,
+  picker_colorchecker_mode,
   reference_forward_xyz,
   reference_inverse_acescg,
 } from "../src/wasm/pkg/modcam16_color_core.js";
@@ -55,6 +56,23 @@ test("WASM ACES path matches the independent PyOpenColorIO ACES 2.0 oracle", asy
             actualInverse[channel] - expected.inverse_acescg[index][channel],
           ) < 3e-5,
           `inverse profile=${profile}, vector=${index}, channel=${channel}`,
+        );
+      }
+    }
+  }
+
+  assert.equal(oracle.colorchecker.names.length, 18);
+  assert.ok(Math.abs(oracle.colorchecker.scene_gain - 2.0138005459530484) < 3e-6);
+  for (const profile of ["0", "1", "2", "4"]) {
+    const actual = picker_colorchecker_mode(Number(profile));
+    const expected = oracle.colorchecker.views[profile];
+    assert.equal(actual.length, 18 * 7);
+    for (let patch = 0; patch < 18; patch += 1) {
+      assert.equal(actual[patch * 7 + 6], 1);
+      for (let channel = 0; channel < 3; channel += 1) {
+        assert.ok(
+          Math.abs(actual[patch * 7 + 3 + channel] - expected[patch][channel]) < 5e-5,
+          `ColorChecker profile=${profile}, patch=${oracle.colorchecker.names[patch]}, channel=${channel}`,
         );
       }
     }

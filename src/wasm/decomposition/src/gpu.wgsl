@@ -19,14 +19,6 @@ struct Params {
 @group(0) @binding(4) var<storage, read> profile_data: array<f32>;
 
 const DEG: f32 = 57.29577951308232;
-const AP0_TO_AP1: mat3x3<f32> = mat3x3<f32>(
-  vec3<f32>(1.4514393161, -0.0765537734, 0.0083161484),
-  vec3<f32>(-0.2365107469, 1.1762296998, -0.0060324498),
-  vec3<f32>(-0.2149285693, -0.0996759264, 0.9977163014));
-const ACESCG_TO_AP0: mat3x3<f32> = mat3x3<f32>(
-  vec3<f32>(0.6954522414, 0.0447945634, -0.0055258826),
-  vec3<f32>(0.1406786965, 0.8596711185, 0.0040252103),
-  vec3<f32>(0.1638690622, 0.0955343182, 1.0015006723));
 const XYZ_TO_P3: mat3x3<f32> = mat3x3<f32>(
   vec3<f32>(2.493496911941425, -0.829488969561575, 0.035845830243784),
   vec3<f32>(-0.931383617919124, 1.762664060318347, -0.076172389268042),
@@ -247,9 +239,8 @@ fn jmh_to_target_rgb(jmh: vec3<f32>, base: u32) -> vec3<f32> {
     sign(rgb_a.z) * pow(27.1299992 * rz / (1.0 - rz), 2.38095236));
   return profile_matrix(base, 27u, lms);
 }
-fn aces_forward(profile: u32, acescg: vec3<f32>) -> vec3<f32> {
+fn aces_forward_from_ap0(profile: u32, ap0: vec3<f32>) -> vec3<f32> {
   let base = profile_base(profile);
-  let ap0 = clamp3(mconst(ACESCG_TO_AP0, acescg), 0.0, pvalue(base, 38u));
   let jmh = rgb_to_jmh_ap0(ap0);
   let chroma = chroma_forward(jmh, base);
   let compressed = gamut_compress_forward(chroma, chroma.x, reach_sample(jmh.z, base), base);
@@ -293,7 +284,7 @@ fn jhk_from_xyz(xyz: vec3<f32>) -> f32 {
   return sqrt(max(j * j + 66.0 * chroma, 0.0));
 }
 fn jhk_for_ap0(ap0: vec3<f32>, profile: u32) -> f32 {
-  return jhk_from_xyz(aces_forward(profile, mconst(AP0_TO_AP1, ap0)));
+  return jhk_from_xyz(aces_forward_from_ap0(profile, ap0));
 }
 
 fn srgb_encode(value: f32) -> f32 {
@@ -303,11 +294,10 @@ fn srgb_encode(value: f32) -> f32 {
 }
 
 // The preview transform is fixed to ACES 2.0 SDR 100-nit P3-D65 (profile 4).
-// aces_forward is the same OCIO-derived fixed function used by the solve path;
-// only the final XYZ-to-P3 matrix and sRGB encoding are added here.
+// aces_forward_from_ap0 is the same OCIO-derived fixed function used by the
+// solve path; only the final XYZ-to-P3 matrix and sRGB encoding are added here.
 fn preview_pixel(ap0: vec3<f32>) -> vec3<f32> {
-  let acescg = mconst(AP0_TO_AP1, ap0);
-  let xyz = aces_forward(4u, acescg);
+  let xyz = aces_forward_from_ap0(4u, ap0);
   let p3 = mconst(XYZ_TO_P3, xyz);
   return vec3<f32>(srgb_encode(p3.x), srgb_encode(p3.y), srgb_encode(p3.z));
 }

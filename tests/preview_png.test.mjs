@@ -20,6 +20,37 @@ function expectedSample(value, hdr) {
   return Math.round(255 * (linear <= .0031308 ? linear * 12.92 : 1.055 * linear ** (1 / 2.4) - .055));
 }
 
+function readIccTag(bytes, signature) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint32(128);
+  for (let index = 0; index < count; index += 1) {
+    const entry = 132 + index * 12;
+    if (String.fromCharCode(...bytes.slice(entry, entry + 4)) === signature) {
+      const offset = view.getUint32(entry + 4);
+      const size = view.getUint32(entry + 8);
+      return bytes.slice(offset, offset + size);
+    }
+  }
+  throw new Error(`ICC tag ${signature} is missing`);
+}
+
+test("generated ICC chad tags contain the D50-to-D65 Bradford adaptation", () => {
+  const bradford = [[0.8951, 0.2664, -0.1614], [-0.7502, 1.7135, 0.0367], [0.0389, -0.0685, 1.0296]];
+  const bradfordInverse = [[0.9869929055, -0.1470542564, 0.1599626517], [0.4323052697, 0.5183602717, 0.0492912282], [-0.0085286646, 0.0400428217, 0.9684866958]];
+  const d50 = [0.9642, 1, 0.8249];
+  const d65 = [0.3127 / 0.329, 1, (1 - 0.3127 - 0.329) / 0.329];
+  const cones = white => bradford.map(row => row.reduce((sum, value, index) => sum + value * white[index], 0));
+  const source = cones(d65);
+  const target = cones(d50);
+  const expected = bradfordInverse.map((row, rowIndex) => row.map((_, column) =>
+    bradford.reduce((sum, coneRow, coneIndex) => sum + row[coneIndex] * (target[coneIndex] / source[coneIndex]) * coneRow[column], 0)));
+  const tag = readIccTag(displayIcc("srgb"), "chad");
+  assert.equal(String.fromCharCode(...tag.slice(0, 4)), "sf32");
+  const view = new DataView(tag.buffer, tag.byteOffset, tag.byteLength);
+  for (let row = 0; row < 3; row += 1) for (let column = 0; column < 3; column += 1)
+    close(view.getInt32(8 + (row * 3 + column) * 4) / 65536, expected[row][column], 2e-5, `chad ${row}/${column}`);
+});
+
 test("physical white anchors are independently derived with the 203-nit appearance context", () => {
   close(J_HK_PEAK, oracle.peak_jhk, 1e-9, "1000-nit JHK");
   close(J_REFERENCE_WHITE, 100 / J_HK_PEAK, 1e-12, "203-nit reference locator");
