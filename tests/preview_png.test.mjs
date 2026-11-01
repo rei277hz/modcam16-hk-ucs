@@ -12,7 +12,7 @@ const oracle = JSON.parse(execFileSync(process.env.PYTHON ?? "python3", ["tests/
 const close = (actual, expected, tolerance, message) => assert.ok(Math.abs(actual - expected) < tolerance, `${message}: ${actual} vs ${expected}`);
 function expectedSample(value, hdr) {
   if (hdr) {
-    const linear = Math.max(0, Math.min(10, value)) / 100;
+    const linear = Math.max(0, Math.min(10, value * 2.03)) / 100;
     const p = linear ** (2610 / 16384);
     return Math.round(65535 * ((3424 / 4096 + 2413 / 128 * p) / (1 + 2392 / 128 * p)) ** (2523 / 32));
   }
@@ -74,6 +74,15 @@ test("fixed Rec.2020 authoring inverse and all forward views agree with Python O
         close(values[26 + c], oracle.views[view].rgb[index][c], 8e-5, `view ${view}/${index}/${c}`);
       }
     }
+  }
+});
+
+test("HDR Rec.2020 reference white maps to an ACEScg neutral near one", () => {
+  const evaluated = picker_evaluate(0, J_REFERENCE_WHITE, .5, .5, 0);
+  assert.equal(evaluated[0], 1);
+  for (let c = 0; c < 3; c++) {
+    close(evaluated[1 + c], .939756, 2e-5, `ACEScg diffuse white ${c}`);
+    close(evaluated[23 + c], 1, 3e-5, `Rec.2020 reference white ${c}`);
   }
 });
 

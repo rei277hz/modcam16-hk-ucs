@@ -1,0 +1,1160 @@
+{
+  "schema": 4,
+  "extension": {
+    "id": "com.modcam16.hdr-picker",
+    "version": "0.1.4"
+  },
+  "photoshop": "27.11.0",
+  "context": {
+    "documentId": 62,
+    "foreground": [
+      5.302736759185791,
+      5.68022346496582,
+      0.14922547340393066
+    ],
+    "view": 0,
+    "viewName": "View unavailable",
+    "fallback": true
+  },
+  "layout": {
+    "panel": {
+      "width": 280,
+      "height": 180
+    },
+    "webview": {
+      "width": 280,
+      "height": 180
+    },
+    "appliedWebview": {
+      "width": 280,
+      "height": 180
+    }
+  },
+  "foregroundDescriptor": {
+    "foregroundColor": {
+      "_obj": "RGBColor",
+      "redFloat": 5.302736759185791,
+      "greenFloat": 5.68022346496582,
+      "blueFloat": 0.14922547340393066
+    }
+  },
+  "foregroundSource": "native-float",
+  "documentDescriptor": {
+    "depth": 32,
+    "profile": "ACEScg"
+  },
+  "capabilities": {
+    "viewport": {
+      "width": 280,
+      "height": 180
+    },
+    "slice": {
+      "width": 256,
+      "height": 256
+    },
+    "renderer": "WebGL2",
+    "failures": []
+  },
+  "provenance": {
+    "capture": "modcam16-host-diagnostics2.json",
+    "sha256": "341ef9e0578dc41bf3aee58e386fe381e317b4cfac65c7c68aca4f8d86a78772",
+    "redaction": "Only native foreground readings, pixel metadata, layout, and transaction readback evidence retained; names, paths, XMP, document descriptors, timestamps, and commands omitted."
+  },
+  "transactions": [
+    {
+      "id": 1237,
+      "documentId": 62,
+      "requested": [
+        0.059661848483750786,
+        0.07371767057481754,
+        0.03328324090133147
+      ],
+      "outcome": {
+        "applied": true,
+        "foreground": [
+          0.059661865234375,
+          0.07371765375137329,
+          0.033283233642578125
+        ]
+      },
+      "events": [
+        {
+          "phase": "previous",
+          "foreground": [
+            0.6554039716720581,
+            0.8763290047645569,
+            0.26709794998168945
+          ],
+          "reading": {
+            "foreground": [
+              0.6554039716720581,
+              0.8763290047645569,
+              0.26709794998168945
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 167.12801277637482,
+                "grain": 223.463896214962,
+                "blue": 68.10997724533081
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 195.99610894941634,
+                  "grain": 245,
+                  "blue": 117.00389105058366
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 68.10997724533081,
+                "grain": 223.463896214962,
+                "red": 167.12801277637482
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.6554039716720581,
+                0.8763290047645569,
+                0.26709794998168945
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "phase": "readback",
+          "foreground": [
+            0.059661865234375,
+            0.07371765375137329,
+            0.033283233642578125
+          ],
+          "reading": {
+            "foreground": [
+              0.059661865234375,
+              0.07371765375137329,
+              0.033283233642578125
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 15.21377183496952,
+                "grain": 18.798005506396294,
+                "blue": 8.487226478755474
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 65.00389105058366,
+                  "grain": 78,
+                  "blue": 46
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 8.487226478755474,
+                "grain": 18.798005506396294,
+                "red": 15.21377183496952
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.059661865234375,
+                0.07371765375137329,
+                0.033283233642578125
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 1242,
+      "documentId": 62,
+      "requested": [
+        0.11556934717172106,
+        0.1450732834708583,
+        0.060842097360890926
+      ],
+      "outcome": {
+        "applied": true,
+        "foreground": [
+          0.1155693531036377,
+          0.1450732946395874,
+          0.06084209680557251
+        ]
+      },
+      "events": [
+        {
+          "phase": "previous",
+          "foreground": [
+            0.059661865234375,
+            0.07371765375137329,
+            0.033283233642578125
+          ],
+          "reading": {
+            "foreground": [
+              0.059661865234375,
+              0.07371765375137329,
+              0.033283233642578125
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 15.21377183496952,
+                "grain": 18.798005506396294,
+                "blue": 8.487226478755474
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 65.00389105058366,
+                  "grain": 78,
+                  "blue": 46
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 8.487226478755474,
+                "grain": 18.798005506396294,
+                "red": 15.21377183496952
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.059661865234375,
+                0.07371765375137329,
+                0.033283233642578125
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "phase": "readback",
+          "foreground": [
+            0.1155693531036377,
+            0.1450732946395874,
+            0.06084209680557251
+          ],
+          "reading": {
+            "foreground": [
+              0.1155693531036377,
+              0.1450732946395874,
+              0.06084209680557251
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 29.47018314152956,
+                "grain": 36.99368633329868,
+                "blue": 15.51473468542099
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 90,
+                  "grain": 108,
+                  "blue": 62
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 15.51473468542099,
+                "grain": 36.99368633329868,
+                "red": 29.47018314152956
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.1155693531036377,
+                0.1450732946395874,
+                0.06084209680557251
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 1476,
+      "documentId": 62,
+      "requested": [
+        0.10638319346438399,
+        0.13417040335181607,
+        0.21540164467527245
+      ],
+      "outcome": {
+        "applied": true,
+        "foreground": [
+          0.10638320446014404,
+          0.13417041301727295,
+          0.21540164947509766
+        ]
+      },
+      "events": [
+        {
+          "phase": "previous",
+          "foreground": [
+            0.1155693531036377,
+            0.1450732946395874,
+            0.06084209680557251
+          ],
+          "reading": {
+            "foreground": [
+              0.1155693531036377,
+              0.1450732946395874,
+              0.06084209680557251
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 29.47018314152956,
+                "grain": 36.99368633329868,
+                "blue": 15.51473468542099
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 90,
+                  "grain": 108,
+                  "blue": 62
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 15.51473468542099,
+                "grain": 36.99368633329868,
+                "red": 29.47018314152956
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.1155693531036377,
+                0.1450732946395874,
+                0.06084209680557251
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "phase": "readback",
+          "foreground": [
+            0.10638320446014404,
+            0.13417041301727295,
+            0.21540164947509766
+          ],
+          "reading": {
+            "foreground": [
+              0.10638320446014404,
+              0.13417041301727295,
+              0.21540164947509766
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 27.12771523743868,
+                "grain": 34.2134515196085,
+                "blue": 54.9274206161499
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 80,
+                  "grain": 103.00389105058366,
+                  "blue": 131
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 54.9274206161499,
+                "grain": 34.2134515196085,
+                "red": 27.12771523743868
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.10638320446014404,
+                0.13417041301727295,
+                0.21540164947509766
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 1483,
+      "documentId": 62,
+      "requested": [
+        0.17865114900218088,
+        0.18160411049946218,
+        0.1812233665339273
+      ],
+      "outcome": {
+        "applied": true,
+        "foreground": [
+          0.17865115404129028,
+          0.18160414695739746,
+          0.18122339248657227
+        ]
+      },
+      "events": [
+        {
+          "phase": "previous",
+          "foreground": [
+            0.10638320446014404,
+            0.13417041301727295,
+            0.21540164947509766
+          ],
+          "reading": {
+            "foreground": [
+              0.10638320446014404,
+              0.13417041301727295,
+              0.21540164947509766
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 27.12771523743868,
+                "grain": 34.2134515196085,
+                "blue": 54.9274206161499
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 80,
+                  "grain": 103.00389105058366,
+                  "blue": 131
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 54.9274206161499,
+                "grain": 34.2134515196085,
+                "red": 27.12771523743868
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.10638320446014404,
+                0.13417041301727295,
+                0.21540164947509766
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "phase": "readback",
+          "foreground": [
+            0.17865115404129028,
+            0.18160414695739746,
+            0.18122339248657227
+          ],
+          "reading": {
+            "foreground": [
+              0.17865115404129028,
+              0.18160414695739746,
+              0.18122339248657227
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 45.55604428052902,
+                "grain": 46.309049874544144,
+                "blue": 46.21195748448372
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 117.00389105058366,
+                  "grain": 118,
+                  "blue": 118
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 46.21195748448372,
+                "grain": 46.309049874544144,
+                "red": 45.55604428052902
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.17865115404129028,
+                0.18160414695739746,
+                0.18122339248657227
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 1490,
+      "documentId": 62,
+      "requested": [
+        0.17865131800453196,
+        0.18160428266517026,
+        0.18122353829178403
+      ],
+      "outcome": {
+        "applied": true,
+        "foreground": [
+          0.1786513328552246,
+          0.181604266166687,
+          0.18122351169586182
+        ]
+      },
+      "events": [
+        {
+          "phase": "previous",
+          "foreground": [
+            0.17865115404129028,
+            0.18160414695739746,
+            0.18122339248657227
+          ],
+          "reading": {
+            "foreground": [
+              0.17865115404129028,
+              0.18160414695739746,
+              0.18122339248657227
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 45.55604428052902,
+                "grain": 46.309049874544144,
+                "blue": 46.21195748448372
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 117.00389105058366,
+                  "grain": 118,
+                  "blue": 118
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 46.21195748448372,
+                "grain": 46.309049874544144,
+                "red": 45.55604428052902
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.17865115404129028,
+                0.18160414695739746,
+                0.18122339248657227
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "phase": "readback",
+          "foreground": [
+            0.1786513328552246,
+            0.181604266166687,
+            0.18122351169586182
+          ],
+          "reading": {
+            "foreground": [
+              0.1786513328552246,
+              0.181604266166687,
+              0.18122351169586182
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 45.55608607828617,
+                "grain": 46.30909167230129,
+                "blue": 46.21200308203697
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 117.00389105058366,
+                  "grain": 118,
+                  "blue": 118
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 46.21200308203697,
+                "grain": 46.30909167230129,
+                "red": 45.55608607828617
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.1786513328552246,
+                0.181604266166687,
+                0.18122351169586182
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 1555,
+      "documentId": 62,
+      "requested": [
+        0.17899405855906,
+        0.12768668863968144,
+        0.10293088938701704
+      ],
+      "outcome": {
+        "applied": true,
+        "foreground": [
+          0.1789940595626831,
+          0.12768667936325073,
+          0.10293090343475342
+        ]
+      },
+      "events": [
+        {
+          "phase": "previous",
+          "foreground": [
+            0.1786513328552246,
+            0.181604266166687,
+            0.18122351169586182
+          ],
+          "reading": {
+            "foreground": [
+              0.1786513328552246,
+              0.181604266166687,
+              0.18122351169586182
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 45.55608607828617,
+                "grain": 46.30909167230129,
+                "blue": 46.21200308203697
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 117.00389105058366,
+                  "grain": 118,
+                  "blue": 118
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 46.21200308203697,
+                "grain": 46.30909167230129,
+                "red": 45.55608607828617
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.1786513328552246,
+                0.181604266166687,
+                0.18122351169586182
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "phase": "readback",
+          "foreground": [
+            0.1789940595626831,
+            0.12768667936325073,
+            0.10293090343475342
+          ],
+          "reading": {
+            "foreground": [
+              0.1789940595626831,
+              0.12768667936325073,
+              0.10293090343475342
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 45.64348518848419,
+                "grain": 32.56010703742504,
+                "blue": 26.247376576066017
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 127.99610894941634,
+                  "grain": 98,
+                  "blue": 88
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 26.247376576066017,
+                "grain": 32.56010703742504,
+                "red": 45.64348518848419
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.1789940595626831,
+                0.12768667936325073,
+                0.10293090343475342
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 1635,
+      "documentId": 62,
+      "requested": [
+        5.364700750445889,
+        5.670184850949855,
+        0.1582520432141899
+      ],
+      "outcome": {
+        "applied": true,
+        "foreground": [
+          5.364700794219971,
+          5.670185089111328,
+          0.1582520455121994
+        ]
+      },
+      "events": [
+        {
+          "phase": "previous",
+          "foreground": [
+            0.1789940595626831,
+            0.12768667936325073,
+            0.10293090343475342
+          ],
+          "reading": {
+            "foreground": [
+              0.1789940595626831,
+              0.12768667936325073,
+              0.10293090343475342
+            ],
+            "source": "paint-sample",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "red": 45.64348518848419,
+                "grain": 32.56010703742504,
+                "blue": 26.247376576066017
+              }
+            },
+            "rgbProperty": {
+              "descriptor": {
+                "foregroundColorRGB": {
+                  "_obj": "RGBColor",
+                  "red": 127.99610894941634,
+                  "grain": 98,
+                  "blue": 88
+                }
+              }
+            },
+            "conversion": {
+              "targetModel": 15,
+              "descriptor": {
+                "_obj": "RGBColor",
+                "blue": 26.247376576066017,
+                "grain": 32.56010703742504,
+                "red": 45.64348518848419
+              }
+            },
+            "sample": {
+              "documentId": 62,
+              "foreground": [
+                0.1789940595626831,
+                0.12768667936325073,
+                0.10293090343475342
+              ],
+              "cached": false,
+              "cleanup": {
+                "closed": true,
+                "sourceRestored": true,
+                "autoCloseRegistered": true,
+                "imageDataDisposed": true
+              },
+              "sourceDepth": 32,
+              "sourceProfile": "ACEScg",
+              "componentSize": 32,
+              "components": 4,
+              "colorSpace": "RGB",
+              "colorProfile": "ACEScg",
+              "width": 1,
+              "height": 1,
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "phase": "readback",
+          "foreground": [
+            5.364700794219971,
+            5.670185089111328,
+            0.1582520455121994
+          ],
+          "reading": {
+            "foreground": [
+              5.364700794219971,
+              5.670185089111328,
+              0.1582520455121994
+            ],
+            "source": "native-float",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "redFloat": 5.364700794219971,
+                "greenFloat": 5.670185089111328,
+                "blueFloat": 0.1582520455121994
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 1739,
+      "documentId": 62,
+      "requested": [
+        5.3027366204840085,
+        5.680223471922047,
+        0.14922546705833767
+      ],
+      "outcome": {
+        "applied": true,
+        "foreground": [
+          5.302736759185791,
+          5.68022346496582,
+          0.14922547340393066
+        ]
+      },
+      "events": [
+        {
+          "phase": "previous",
+          "foreground": [
+            5.364700794219971,
+            5.670185089111328,
+            0.1582520455121994
+          ],
+          "reading": {
+            "foreground": [
+              5.364700794219971,
+              5.670185089111328,
+              0.1582520455121994
+            ],
+            "source": "native-float",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "redFloat": 5.364700794219971,
+                "greenFloat": 5.670185089111328,
+                "blueFloat": 0.1582520455121994
+              }
+            }
+          }
+        },
+        {
+          "phase": "readback",
+          "foreground": [
+            5.302736759185791,
+            5.68022346496582,
+            0.14922547340393066
+          ],
+          "reading": {
+            "foreground": [
+              5.302736759185791,
+              5.68022346496582,
+              0.14922547340393066
+            ],
+            "source": "native-float",
+            "descriptor": {
+              "foregroundColor": {
+                "_obj": "RGBColor",
+                "redFloat": 5.302736759185791,
+                "greenFloat": 5.68022346496582,
+                "blueFloat": 0.14922547340393066
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

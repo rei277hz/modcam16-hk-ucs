@@ -112,9 +112,9 @@ export function encodePq(nits: number): number {
 }
 function sample(value: number, hdr: boolean): number {
   if (!Number.isFinite(value)) value = 0;
-  // The forward view is already in 100-nit units. Image source-unit handling
-  // happens before the inverse view transform, never during PNG encoding.
-  if (hdr) return Math.round(encodePq(Math.max(0, Math.min(10, value)) * 100) * 65535);
+  // Internal HDR view values use 1.0 for 203-nit reference white. PQ PNGs use
+  // the common 100-nit-unit convention, so only this encoder boundary upscales.
+  if (hdr) return Math.round(encodePq(Math.max(0, Math.min(10, value * 2.03)) * 100) * 65535);
   const l = Math.max(0, Math.min(1, value));
   return Math.round((l <= 0.0031308 ? 12.92 * l : 1.055 * l ** (1 / 2.4) - 0.055) * 255);
 }

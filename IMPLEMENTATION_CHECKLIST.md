@@ -5,15 +5,15 @@
 - [x] Documentation defines display sources and RAW preparation at the XYZ-D65 boundary.
 - [x] Document ACEScg/AP0 as scene-reference-only formats.
 - [x] Document `inverse_from_xyz_d65` as the sole canonical inverse entry.
-- [x] Document RGB→XYZ-D65 adapters and the mandatory DNG 2.03 policy.
+- [x] Document RGB→XYZ-D65 adapters and the DNG linear-1.0 reference-white policy.
 - [x] Use Color trackpad and J′ trackwheel consistently for the related
       track-motion controls.
 - [x] Check in the official post-November-2014 X-Rite 24-patch Lab D50 file
       with source, checksum, measurement, format, and active-subset metadata.
 - [x] Document the 18 chromatic-patch UI subset and retain all six neutral
       patches in the provenance asset without adding UI dots.
-- [x] Document direct CAT02 D50→ACES-white adaptation, RICD target
-      construction, and scene-side 203-nit placement.
+- [x] Document direct CAT02 D50→ACES-white adaptation without ColorChecker
+      RICD scaling, inverse ACES, or scene-side 203-nit placement.
 - [x] Document the DNG ForwardMatrix and ColorMatrix camera-to-D50 branches
       separately from the common CAT02 D50→D65 application boundary.
 - [x] Document Bradford for project-owned ICC PCS adaptations and CAT02 for
@@ -61,16 +61,16 @@
 - [x] Apply the same CAT02 XYZ-D50→XYZ-D65 boundary after either DNG branch.
 - [x] Preserve signed and above-one XYZ-D65 values without clamping.
 - [x] Diagnostics, metadata, and source modes identify XYZ-D65.
-- [x] Apply the fixed ×2.03 multiplier before inverse HDR Rec.2020 processing.
-- [x] Force the DNG 203-nit option checked and disabled.
-- [x] Show helper text explaining the mandatory multiplier.
+- [x] Route DNG through inverse HDR Rec.2020 with linear 1.0 as reference white.
+- [x] Force the DNG 2.03-encoded reference-white option unchecked and disabled.
+- [x] Show helper text explaining the fixed DNG reference-white convention.
 - [x] Use the same XYZ-D65 path for preview, loupe, and sampling.
 
 ## Image and EXR routing
 
 - [x] Route ACEScg EXR through direct scene-reference ACEScg presentation.
 - [x] Route ACES2065-1 EXR through direct scene-reference AP0 presentation.
-- [x] Ensure scene-reference EXR bypasses inverse ACES and the 2.03 multiplier.
+- [x] Ensure scene-reference EXR bypasses inverse ACES and reference-white scaling.
 - [x] Route display-referred RGB images through RGB→XYZ-D65 adapters.
 - [x] Production display and analysis routing uses the XYZ-D65 boundary.
 - [x] Adapt embedded ICC XYZ-PCS/D50 output to XYZ-D65 with Bradford.
@@ -83,7 +83,7 @@
 - [x] Scene-reference EXR tests proving inverse bypass.
 - [x] DNG camera-neutral XYZ-D65 test.
 - [ ] DNG signed/above-one preservation test.
-- [x] DNG mandatory ×2.03 test and disabled-control UI test.
+- [x] DNG disabled-control UI test for the fixed linear-1.0 reference-white path.
 - [ ] End-to-end DNG preview, loupe, sampling, and availability tests.
 - [ ] CPU/WASM/WebGPU numerical parity tests for the direct AP0 paths.
 - [x] Verify all 24 provenance records and exact mapping of the active 18 Lab
@@ -94,8 +94,8 @@
       Bradford.
 - [x] Verify valid, absent, and invalid ForwardMatrix branches, including the
       common CAT02 final boundary and accurate diagnostics.
-- [x] Verify the RICD perfect diffuser and calculated 203-nit scene gain against
-      the Python/OpenColorIO reference.
+- [x] Verify ColorChecker uses direct CAT02-derived ACEScg targets without RICD
+      or a calculated 203-nit scene gain.
 - [x] Verify every ColorChecker API shares the same scene targets while
       preserving record layouts, patch order, dot availability, and snapping.
 
@@ -103,11 +103,8 @@
 
 - [x] Centralize official Lab D50 patch data and the active 18-patch mapping.
 - [x] Convert Lab D50→XYZ D50→CAT02-adapted ACES-white XYZ→ACEScg/AP1.
-- [x] Apply `0.18 / 0.185 × (ACEScg + 0.005)` exactly once.
-- [x] Calculate the scene gain by inverting display-linear HDR Rec.2020
-      `(2.03, 2.03, 2.03)` and dividing by the RICD perfect diffuser.
-- [x] Apply that gain before the forward ACES view; do not scale post-forward
-      ColorChecker RGB.
+- [x] Do not apply RICD flare/scale or any separate scene gain.
+- [x] Do not run ColorChecker patches through inverse ACES view transforms.
 - [x] Update active normalized and legacy/public ColorChecker APIs to use the
       shared target helper.
 

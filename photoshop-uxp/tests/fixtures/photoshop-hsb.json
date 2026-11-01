@@ -1,0 +1,25 @@
+{
+  "provenance": {
+    "kind": "redacted-user-host-capture",
+    "capturedAt": "2026-10-09T00:45:26.565Z",
+    "note": "Foreground descriptor and renderer captured in Photoshop. Native RGB conversion was not captured; conversion outputs in tests are synthetic."
+  },
+  "foregroundDescriptor": {
+    "foregroundColor": {
+      "_obj": "HSBColorClass",
+      "hue": {
+        "_unit": "angleUnit",
+        "_value": 59.996337890625
+      },
+      "saturation": 81.0452429999237,
+      "brightness": 78.79606317235066
+    }
+  },
+  "documentDescriptor": {
+    "depth": 32,
+    "profile": "ACEScg"
+  },
+  "capabilities": {
+    "renderer": "WebGL2"
+  }
+}

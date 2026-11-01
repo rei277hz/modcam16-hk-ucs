@@ -1,0 +1,112 @@
+<!doctype html>
+<html><head><meta charset="UTF-8"><title>Native panel sizing harness</title>
+<link rel="stylesheet" href="/plugin/panel.css">
+<style>
+:root { --uxp-host-background-color: #323232; --uxp-host-text-color: #f0f0f0;
+  --uxp-host-border-color: #242424; --uxp-host-text-color-secondary: #b8b8b8;
+  --uxp-host-widget-hover-background-color: #454545; }
+body { display: flex; flex-direction: column; align-items: flex-start; }
+#neighbor { height: 120px; width: 100%; flex: none; }
+#panel-root { width: 340px; height: 360px; position: relative; overflow: hidden; flex: none; }
+#picker-browser { display: block; width: 100%; height: 100%; border: 0; }
+</style></head><body>
+<span id="theme-probe" aria-hidden="true"></span>
+<div id="neighbor">Neighboring Photoshop panel</div>
+<div id="panel-root">
+  <!-- Initial native bounds deliberately stay fixed until the shipping host
+       controller updates them. The iframe models the embedded browser. -->
+  <webview id="picker" style="width:340px;height:360px"><iframe id="picker-browser" name="picker-browser" title="Picker"></iframe></webview>
+</div>
+<script>
+(() => {
+const webview=document.getElementById('picker'),iframe=document.getElementById('picker-browser');
+webview.postMessage=message=>iframe.contentWindow.postMessage(message,location.origin);
+window.addEventListener('message',event=>{
+  if(event.source!==iframe.contentWindow)return;
+  const nativeEvent=new MessageEvent('message',{data:event.data,origin:event.origin});
+  Object.defineProperty(nativeEvent,'source',{value:webview});
+  window.dispatchEvent(nativeEvent);
+});
+// All native conversion and transport behavior here is synthetic. Load the
+// shipping host and browser together without claiming actual Photoshop proof.
+window.hostState={id:7,rgb:[.18,.18,.18],view:'ACES 2.0 - HDR 1000 nits (Rec.2020)',writes:[],saved:null,
+  foreground:null,conversionResult:null,rgbProperty:null,forceOrdinary:false,ordinaryForeground:null,
+  conversions:[],modal:0,modalError:null,readError:null,writeError:null,clamp:false,messages:[],
+  probes:0,closed:0,disposed:0,gripCalls:[]};
+window.addEventListener('message',event=>{if(event.source===iframe.contentWindow)hostState.messages.push(event.data);});
+const documents=new Map();let nextDocument=100;
+const nativeColor=()=>hostState.foreground??(hostState.forceOrdinary?hostState.ordinaryForeground:
+  {_obj:'RGBColor',redFloat:hostState.rgb[0],greenFloat:hostState.rgb[1],blueFloat:hostState.rgb[2]});
+function assertTemporary(document){
+  if(hostState.modal!==1||document.id<100||hostState.id!==document.id)throw Error('Only the active owned duplicate may change');
+}
+function makeDocument(id,owner=null){
+  const result={id,owner,width:1024,height:512,layers:[{id:20}],activeLayers:[],selection:{bounds:{left:10,top:10,right:20,bottom:20}},
+    async duplicate(name,merged){
+      if(hostState.modal!==1||hostState.id!==id||owner!==null||merged!==true)throw Error('Invalid source duplication');
+      const copy=makeDocument(nextDocument++,id);documents.set(copy.id,copy);hostState.id=copy.id;hostState.probes++;return copy;
+    },
+    async crop(bounds){assertTemporary(result);result.width=bounds.right-bounds.left;result.height=bounds.bottom-bounds.top;},
+    async createPixelLayer(){assertTemporary(result);const layer={id:30};result.layers.push(layer);return layer;},
+    async close(option){
+      if(hostState.modal!==1||owner===null||option!=='dontSave')throw Error('Invalid temporary cleanup');
+      documents.delete(id);hostState.closed++;if(hostState.id===id)hostState.id=owner;
+    }};
+  result.selection.deselect=async()=>{assertTemporary(result);result.selection.bounds=null;};return result;
+}
+documents.set(7,makeDocument(7));
+window.sourceState=()=>{const source=documents.get(7);return {width:source.width,height:source.height,
+  selection:source.selection.bounds,layers:source.layers.map(layer=>layer.id),activeLayers:source.activeLayers};};
+const action={async batchPlay([command]){
+  if(command._obj==='get'&&command._target[0]._ref==='document')return[{documentID:command._target[0]._id,depth:32,profile:'ACEScg',openColorIO:{view:hostState.view}}];
+  if(command._obj==='get'&&command._target[0]._property==='foregroundColorRGB')return[hostState.rgbProperty??{_obj:'error',message:'Synthetic RGB property unavailable',result:-1}];
+  if(command._obj==='get')return[hostState.readError??{foregroundColor:nativeColor()}];
+  if(hostState.modal<=0)throw Error('Native mutation must be modal');
+  if(command._obj==='select'){
+    assertTemporary(documents.get(hostState.id));if(command._target[0]._value!=='RGB')throw Error('Expected composite RGB');return[{}];
+  }
+  if(command._obj==='fill'){
+    const copy=documents.get(hostState.id);assertTemporary(copy);
+    if(command.using._value!=='foregroundColor'||command.opacity._value!==100||command.mode._value!=='normal'||command.preserveTransparency!==false)throw Error('Invalid native fill');
+    copy.pixel=new Float32Array([...hostState.rgb,1]);return[{}];
+  }
+  if(JSON.stringify(command._target)!==JSON.stringify([{_ref:'color',_property:'foregroundColor'}])||command.to._obj!=='RGBColor')throw Error('Invalid foreground descriptor');
+  if(hostState.writeError)return[hostState.writeError];
+  const rgb=[command.to.redFloat,command.to.greenFloat,command.to.blueFloat];
+  if(!rgb.every(Number.isFinite))throw Error('Native foreground requires finite float channels');
+  hostState.writes.push(rgb);
+  hostState.rgb=rgb.map(v=>Math.fround(hostState.clamp?Math.max(0,Math.min(1,v)):v));hostState.foreground=null;return[{}];
+},addNotificationListener(){},removeNotificationListener(){}};
+const photoshop={app:{get documents(){return hostState.id===null?[]:Array.from(documents.values());},
+  get activeDocument(){return documents.get(hostState.id);},set activeDocument(value){hostState.id=value.id;}},action,
+  constants:{SaveOptions:{DONOTSAVECHANGES:'dontSave'}},
+  imaging:{async getPixels(options){
+    const copy=documents.get(options.documentID);assertTemporary(copy);
+    if(options.componentSize!==32||options.colorSpace!=='RGB'||options.colorProfile!==undefined||options.layerID!==30)throw Error('Invalid native pixel request');
+    return{imageData:{width:1,height:1,componentSize:32,components:4,colorSpace:'RGB',colorProfile:'ACEScg (Linear RGB Profile)',
+      async getData(){return copy.pixel;},dispose(){hostState.disposed++;}}};
+  }},core:{
+  async suppressResizeGripper(options){hostState.gripCalls.push(options);},
+  convertColor(color,model){hostState.conversions.push({color,model});if(model!==15)throw Error('Native RGB model must be 15');
+    return hostState.conversionResult??{_obj:'RGBColor',redFloat:hostState.rgb[0],greenFloat:hostState.rgb[1],blueFloat:hostState.rgb[2]};},
+  async executeAsModal(callback,options){
+    if(options.timeOut!==1)throw Error('Native timeout must be one second');
+    if(hostState.modalError)throw Error(hostState.modalError);
+    if(hostState.modal!==0)throw Error('Modal scopes must not nest');
+    const registered=new Set(),context={isCancelled:false,hostControl:{
+      registerAutoCloseDocument(id){registered.add(id);},unregisterAutoCloseDocument(id){registered.delete(id);}}};
+    hostState.modal++;try{await callback(context);}finally{
+      for(const id of registered)if(documents.has(id))await documents.get(id).close('dontSave');hostState.modal--;
+    }
+  }
+}};
+const uxp={host:{version:'27.11.0'},entrypoints:{setup(config){window.hostPanel=config.panels.picker;}},
+  storage:{localFileSystem:{async getFileForSaving(){return{async write(text){hostState.saved=JSON.parse(text);}};}}}};
+window.require=name=>name==='photoshop'?photoshop:uxp;
+})();
+</script>
+<script src="/plugin/host.js"></script>
+<script>
+hostPanel.show(document.getElementById('panel-root'));
+document.getElementById('picker-browser').src='/plugin/web/index.html';
+</script></body></html>

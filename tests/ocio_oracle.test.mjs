@@ -62,7 +62,6 @@ test("WASM ACES path matches the independent PyOpenColorIO ACES 2.0 oracle", asy
   }
 
   assert.equal(oracle.colorchecker.names.length, 18);
-  assert.ok(Math.abs(oracle.colorchecker.scene_gain - 2.0138005459530484) < 3e-6);
   for (const profile of ["0", "1", "2", "4"]) {
     const actual = picker_colorchecker_mode(Number(profile));
     const expected = oracle.colorchecker.views[profile];

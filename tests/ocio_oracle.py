@@ -24,9 +24,6 @@ COLORCHECKER_REFERENCE = (
     / "colorchecker"
     / "ColorChecker24_After_Nov2014.txt"
 )
-HDR203_DIFFUSE_WHITE_SCALE = 2.03
-RICD_FLARE = 0.005
-RICD_SCALE = 0.18 / 0.185
 PROFILES = {
     "0": "ACES 2.0 - HDR 1000 nits (Rec.2020)",
     "1": "ACES 2.0 - SDR 100 nits (Rec.709)",
@@ -115,7 +112,7 @@ def _colorchecker_lab() -> tuple[list[str], np.ndarray]:
     return active, np.asarray([rows[name] for name in active], dtype=np.float64)
 
 
-def _colorchecker_scene_targets(hdr_inverse: ocio.CPUProcessor):
+def _colorchecker_scene_targets():
     names, lab = _colorchecker_lab()
     d50_to_aces_white = (
         np.linalg.inv(CAT02)
@@ -124,12 +121,7 @@ def _colorchecker_scene_targets(hdr_inverse: ocio.CPUProcessor):
     )
     xyz_d50_to_ap1 = np.linalg.inv(AP1_TO_XYZ) @ d50_to_aces_white
     ap1 = _lab_d50_to_xyz(lab) @ xyz_d50_to_ap1.T
-    ricd = RICD_SCALE * (ap1 + RICD_FLARE)
-    perfect_diffuser = RICD_SCALE * (1.0 + RICD_FLARE)
-    target_xyz = np.asarray([[HDR203_DIFFUSE_WHITE_SCALE] * 3]) @ REC2020.T
-    target_scene = np.asarray(_apply(hdr_inverse, target_xyz))[0]
-    scene_gain = float(np.mean(target_scene) / perfect_diffuser)
-    return names, ricd * scene_gain, scene_gain
+    return names, ap1
 
 
 def _view_group(config: ocio.Config, view_name: str) -> ocio.GroupTransform:
@@ -176,12 +168,9 @@ def main() -> None:
             "inverse_acescg": _apply(inverse, VECTORS),
         }
     hdr_inverse = config.getProcessor(_view_group(config, PROFILES["0"]), ocio.TRANSFORM_DIR_INVERSE).getDefaultCPUProcessor()
-    colorchecker_names, colorchecker_scene, colorchecker_gain = (
-        _colorchecker_scene_targets(hdr_inverse)
-    )
+    colorchecker_names, colorchecker_scene = _colorchecker_scene_targets()
     records["colorchecker"] = {
         "names": colorchecker_names,
-        "scene_gain": colorchecker_gain,
         "scene": colorchecker_scene.tolist(),
         "views": {},
     }
@@ -196,9 +185,9 @@ def main() -> None:
     codes = [[0, .5, .5], [REFERENCE_J, .5, .5], [100 / PEAK, .5, .5],
              [1, .5, .5], [.38, .86, .62], [.3, .38, .65], [.6, .55, .53], [.1, .48, .52]]
     xyz = np.array([code_xyz(code) for code in codes])
-    scene = _apply(hdr_inverse, xyz * HDR203_DIFFUSE_WHITE_SCALE)
+    scene = _apply(hdr_inverse, xyz)
     backgrounds = [0, REFERENCE_J, neutral_jhk(203) / PEAK, 1]
-    bg_xyz = np.array([code_xyz([v, .5, .5]) * HDR203_DIFFUSE_WHITE_SCALE for v in backgrounds])
+    bg_xyz = np.array([code_xyz([v, .5, .5]) for v in backgrounds])
     bg_scene = _apply(hdr_inverse, bg_xyz)
     records["picker"] = {
         "peak_jhk": PEAK, "reference_j": REFERENCE_J,

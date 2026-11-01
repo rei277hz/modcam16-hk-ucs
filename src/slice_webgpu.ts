@@ -15,7 +15,7 @@ const gpuBufferUsage = () => (globalThis as any).GPUBufferUsage ?? {
 const gpuMapMode = () => (globalThis as any).GPUMapMode ?? { READ: 0x0001 };
 
 const shader = /* wgsl */ `
-struct Settings { width: u32, height: u32, profile: u32, j: f32, mode: u32, treat_display_linear_one_as_hdr203_white: u32, fullRec2020: u32, source_mode: u32 }
+struct Settings { width: u32, height: u32, profile: u32, j: f32, mode: u32, reference_white_encoded_as_linear_203: u32, fullRec2020: u32, source_mode: u32 }
 @group(0) @binding(0) var<uniform> settings: Settings;
 @group(0) @binding(1) var<storage, read> data: array<f32>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
@@ -132,17 +132,17 @@ fn jmhToTarget(jmh:vec3<f32>,base:u32)->vec3<f32>{let r=radians(jmh.z);let a=pow
 fn profileBase(id: u32) -> u32 { if (id == 0u) { return 0u; } if (id == 1u) { return PROFILE_STRIDE; } if (id == 2u) { return 2u * PROFILE_STRIDE; } return 3u * PROFILE_STRIDE; }
 fn forwardAcesAp0(ap0:vec3<f32>,base:u32)->vec3<f32>{let start=rgbToJmh(ap0,base,false);let chroma=chromaForward(start,base);let compressed=gamutForward(chroma,chroma.x,reachSample(start.z,base),base);return clamp3(jmhToTarget(compressed,base),0.0,p(base,37u));}
 fn forwardAces(acescg:vec3<f32>,base:u32)->vec3<f32>{return forwardAcesAp0(acescgToAp0(acescg),base);}
-fn imageDisplay(source: vec3<f32>, profile: u32, treatDisplayLinearOneAsHdr203White: bool, sourceMode: u32) -> vec3<f32> {
+fn imageDisplay(source: vec3<f32>, profile: u32, referenceWhiteEncodedAsLinear203: bool, sourceMode: u32) -> vec3<f32> {
   if (sourceMode == 1u) {
     return forwardAcesAp0(source, profileBase(profile));
   }
-  let scale = select(1.0, HDR203_DIFFUSE_WHITE_SCALE, treatDisplayLinearOneAsHdr203White);
+  let scale = select(1.0, 1.0 / HDR203_DIFFUSE_WHITE_SCALE, referenceWhiteEncodedAsLinear203);
   let scene = inverseAces(source * scale, 0u * PROFILE_STRIDE);
   return forwardAces(scene, profileBase(profile));
 }
 fn decodeJhk(j:f32,x:f32,y:f32)->vec3<f32>{let sx=2.0*x-1.0;let sy=2.0*y-1.0;let radius=length(vec2<f32>(sx,sy));let saturation=FITTED_RADIUS_K*(exp(FITTED_RADIUS_D*radius)-1.0);let h=j*J_PEAK;let u=(.007/.525)*saturation;let denominator=sqrt(h*h+(33.0*u)*(33.0*u))+33.0*u;let ja=select(0.0,h*h/denominator,denominator>0.0);let chroma=u*ja;let light=sqrt(max(h*h-66.0*chroma,0.0));var hue=degrees(atan2(-sx,sy));if(hue<0.0){hue+=360.0;}let hr=radians(hue);let ecc=1.0-.0582*cos(hr)-.0258*cos(2.0*hr)-.1347*cos(3.0*hr)+.0289*cos(4.0*hr)-.1475*sin(hr)-.0308*sin(2.0*hr)+.0385*sin(3.0*hr)+.0096*sin(4.0*hr);let colorfulness=chroma*31.7941491565/35.0;let radiusOpponent=colorfulness/(43.0*.8*ecc);let ach=31.7941491565*pow(max(light,0.0)/100.0,1.0/(.525*1.79622776602));let oa=radiusOpponent*cos(hr);let ob=radiusOpponent*sin(hr);let c0=(460.0*(ach+.305)+451.0*oa+288.0*ob)/1403.0;let c1=(460.0*(ach+.305)-891.0*oa-261.0*ob)/1403.0;let c2=(460.0*(ach+.305)-220.0*oa-6300.0*ob)/1403.0;let fl=.466468345005;let lower=400.0*pow(fl*.26/100.0,.42)/(27.13+pow(fl*.26/100.0,.42));let upper=400.0*pow(fl*150.0/100.0,.42)/(27.13+pow(fl*150.0/100.0,.42));let slope=1.68*27.13*fl*pow(fl*150.0/100.0,-.58)/pow(27.13+pow(fl*150.0/100.0,.42),2.0);let response=vec3<f32>(c0,c1,c2)-vec3<f32>(.1);let middle=clamp(response,vec3<f32>(lower),vec3<f32>(upper));let mid=100.0/fl*pow(27.13*middle/(400.0-middle),vec3<f32>(1.0/.42));let low=.26*response/lower;let up=vec3<f32>(150.0)+(response-vec3<f32>(upper))/slope;let cone=select(select(low,mid,response>=vec3<f32>(lower)),up,response>=vec3<f32>(upper));let adapted=cone/vec3<f32>(1.0250779612,.9837843319,.9216705823);return vec3<f32>(1.862067855*adapted.x-1.011254631*adapted.y+.149186775*adapted.z,.387526543*adapted.x+.621447442*adapted.y-.008973985*adapted.z,-.015841499*adapted.x-.034122938*adapted.y+1.049964437*adapted.z)/100.0;}
-@compute @workgroup_size(${WORKGROUP}, ${WORKGROUP}) fn main(@builtin(global_invocation_id) id: vec3<u32>) { if(id.x>=settings.width||id.y>=settings.height){return;} let x=select(.5,f32(id.x)/f32(settings.width-1u),settings.width>1u);let y=select(.5,1.0-f32(id.y)/f32(settings.height-1u),settings.height>1u);let radius=length(vec2<f32>(2.0*x-1.0,2.0*y-1.0));let index=id.y*settings.width+id.x;if(radius>1.0){output[index]=vec4<f32>(0.0);return;}let xyz=decodeJhk(settings.j,x,y);let source=xyzToRec2020(xyz);let p3=xyzToP3(xyz);if(any(source<vec3<f32>(-1.0e-8))||any(source>vec3<f32>(AUTHORING_REC2020_PEAK+SOURCE_EPS))||(settings.fullRec2020==0u&&(any(p3<vec3<f32>(-1.0e-8))||any(p3>vec3<f32>(AUTHORING_REC2020_PEAK+SOURCE_EPS))))){output[index]=vec4<f32>(0.0);return;}let scene=inverseAces(xyz*HDR203_DIFFUSE_WHITE_SCALE,0u*PROFILE_STRIDE);let base=profileBase(settings.profile);output[index]=vec4<f32>(forwardAces(scene,base),1.0); }
-@compute @workgroup_size(${WORKGROUP}) fn image_main(@builtin(global_invocation_id) id: vec3<u32>) { if(id.x>=settings.width){return;} let index=id.x; let source=input_pixels[index].xyz; let rgb=imageDisplay(source,settings.profile,settings.treat_display_linear_one_as_hdr203_white!=0u,settings.source_mode); output[index]=vec4<f32>(rgb,1.0); }
+@compute @workgroup_size(${WORKGROUP}, ${WORKGROUP}) fn main(@builtin(global_invocation_id) id: vec3<u32>) { if(id.x>=settings.width||id.y>=settings.height){return;} let x=select(.5,f32(id.x)/f32(settings.width-1u),settings.width>1u);let y=select(.5,1.0-f32(id.y)/f32(settings.height-1u),settings.height>1u);let radius=length(vec2<f32>(2.0*x-1.0,2.0*y-1.0));let index=id.y*settings.width+id.x;if(radius>1.0){output[index]=vec4<f32>(0.0);return;}let xyz=decodeJhk(settings.j,x,y);let source=xyzToRec2020(xyz);let p3=xyzToP3(xyz);if(any(source<vec3<f32>(-1.0e-8))||any(source>vec3<f32>(AUTHORING_REC2020_PEAK+SOURCE_EPS))||(settings.fullRec2020==0u&&(any(p3<vec3<f32>(-1.0e-8))||any(p3>vec3<f32>(AUTHORING_REC2020_PEAK+SOURCE_EPS))))){output[index]=vec4<f32>(0.0);return;}let scene=inverseAces(xyz,0u*PROFILE_STRIDE);let base=profileBase(settings.profile);output[index]=vec4<f32>(forwardAces(scene,base),1.0); }
+@compute @workgroup_size(${WORKGROUP}) fn image_main(@builtin(global_invocation_id) id: vec3<u32>) { if(id.x>=settings.width){return;} let index=id.x; let source=input_pixels[index].xyz; let rgb=imageDisplay(source,settings.profile,settings.reference_white_encoded_as_linear_203!=0u,settings.source_mode); output[index]=vec4<f32>(rgb,1.0); }
 `;
 
 export class SliceWebGpuRenderer {
@@ -216,7 +216,7 @@ export class SliceWebGpuRenderer {
     return result;
   }
 
-  async renderImage(parameters: Float32Array, viewIndex: number, sourceMode: ImageSourceMode, treatDisplayLinearOneAsHdr203White: boolean, pixels: Float32Array): Promise<Float32Array> {
+  async renderImage(parameters: Float32Array, viewIndex: number, sourceMode: ImageSourceMode, referenceWhiteEncodedAsLinear203: boolean, pixels: Float32Array): Promise<Float32Array> {
     if (pixels.length === 0 || pixels.length % 3 !== 0) throw new Error("Invalid image pixel buffer.");
     await this.prepare(parameters);
     const device = this.device!;
@@ -241,7 +241,7 @@ export class SliceWebGpuRenderer {
     settingsView.setUint32(8, viewIndex, true);
     settingsView.setFloat32(12, 0, true);
     settingsView.setUint32(16, 1, true);
-    settingsView.setUint32(20, treatDisplayLinearOneAsHdr203White ? 1 : 0, true);
+    settingsView.setUint32(20, referenceWhiteEncodedAsLinear203 ? 1 : 0, true);
     settingsView.setUint32(24, 1, true);
     settingsView.setUint32(28, sourceMode === "scene-reference-aces" ? 1 : 0, true);
     device.queue.writeBuffer(this.settings, 0, settings);

@@ -1,0 +1,36 @@
+load("//build_defs:rules.bzl", "source_tree", "build_step", "bootstrap", "node_tool", "node_program")
+
+NODE_PLATFORM = select({
+    "prelude//os:macos": select({"prelude//cpu:arm64": "darwin-arm64", "DEFAULT": "darwin-x64"}),
+    "DEFAULT": "linux-x64",
+})
+node_tool(name = "node", unpack = "tools/unpack_node.py",
+    url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-" + NODE_PLATFORM + ".tar.xz",
+    sha256 = select({
+        "prelude//os:macos": select({
+            "prelude//cpu:arm64": "f222f7e85cc1d5a3d84786aa86836ec3d41c4dcdf59a40e4a9d719b6b0ae28af",
+            "DEFAULT": "fdaa8c236bd054de59059743ed8d2766de154d81853ca26ad89aca899696170a",
+        }),
+        "DEFAULT": "ca70e9e349de048b9522abb3adc05b3bd6f43c5ffd3ec57916c7da292f59f022",
+    }), visibility = ["PUBLIC"])
+
+bootstrap(name = "bootstrap", script = "tools/bootstrap.py")
+bootstrap(name = "browser_deps", script = "tools/linux_browser.py")
+bootstrap(name = "isolation", script = "tools/isolation.py")
+
+source_tree(
+    name = "sources",
+    subdirs = {"tests": "//tests:files"},
+    srcs = {p: p for p in glob([
+        "color/**", "web/**", "host/**", "tools/**", "references/**", "tests/*.mjs",
+        "manifest.json", "panel.html", "panel.css", "package*.json", "toolchains.json", "tsconfig.json", "THIRD_PARTY_NOTICES.md", "icons/**",
+    ], exclude = ["**/__pycache__/**"])},
+    visibility = ["PUBLIC"],
+)
+
+build_step(name = "plugin", operation = "plugin", sources = ":sources", visibility = ["PUBLIC"])
+build_step(name = "rust_tests", operation = "rust-tests", sources = ":sources", visibility = ["PUBLIC"])
+build_step(name = "package", operation = "package", sources = ":sources", plugin = ":plugin")
+node_program(name = "benchmark", script = "tools/benchmark.mjs", plugin = ":plugin")
+build_step(name = "hdr_audit", operation = "hdr-audit", sources = ":sources", plugin = ":plugin")
+node_program(name = "validate_host", script = "tools/validate_host.mjs", plugin = ":plugin")

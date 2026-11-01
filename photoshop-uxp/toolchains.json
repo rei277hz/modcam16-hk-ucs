@@ -1,0 +1,8 @@
+{
+  "buck2": "2026-08-22-c89474de8970db1d3784063e2fb1efb1803bb177",
+  "rust": "1.99.0",
+  "rustTarget": "wasm32-unknown-unknown",
+  "node": "26.10.0",
+  "python": "3.12 or newer",
+  "note": "Run buck2 run //:bootstrap to provision locked JavaScript/Python tools and record local executable paths. No build or test is run through npm."
+}

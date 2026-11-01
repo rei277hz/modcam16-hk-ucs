@@ -29,7 +29,6 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CONFIG = HERE / "cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio"
 PROFILE = "ACES 2.0 - HDR 1000 nits (Rec.2020)"
-HDR203_DIFFUSE_WHITE_SCALE = 2.03
 AP0_TO_ACESCG = np.array(
     [
         [1.4514393161456653, -0.23651074689374019, -0.21492856925192524],
@@ -212,11 +211,11 @@ def main() -> None:
     assert len(profiles) == 4
 
     harness = ShaderHarness()
-    expected = _ocio_inverse_batch(FIXTURES[:, 3:] * HDR203_DIFFUSE_WHITE_SCALE)
+    expected = _ocio_inverse_batch(FIXTURES[:, 3:])
     actual = harness.render(FIXTURES[:, :3]).astype(np.float64)
     np.testing.assert_allclose(actual, expected, atol=1.0e-1, rtol=3.0e-3)
 
-    cusp_expected = _ocio_inverse_batch((PICKER_XYZ * HDR203_DIFFUSE_WHITE_SCALE)[None, :])
+    cusp_expected = _ocio_inverse_batch(PICKER_XYZ[None, :])
     cusp_actual = harness.render(PICKER_CODE[None, :]).astype(np.float64)
     np.testing.assert_allclose(cusp_actual, cusp_expected, atol=3.0e-5, rtol=3.0e-5)
 
@@ -224,7 +223,7 @@ def main() -> None:
     white_delta = _sample_lut(harness.lut_payload, user0[0, :2])
     target_white = _uv_to_xyz(D65_WHITE_UV + white_delta)
     adapted = _adapt_d65(PICKER_XYZ, target_white)
-    wb_expected = _ocio_inverse_batch((adapted * HDR203_DIFFUSE_WHITE_SCALE)[None, :])
+    wb_expected = _ocio_inverse_batch(adapted[None, :])
     wb_actual = harness.render(PICKER_CODE[None, :], user0=user0).astype(np.float64)
     np.testing.assert_allclose(wb_actual, wb_expected, atol=4.0e-5, rtol=4.0e-5)
 

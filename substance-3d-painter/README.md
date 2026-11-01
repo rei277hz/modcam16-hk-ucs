@@ -38,9 +38,9 @@ equations.
 The normalized 1000-nit scale is
 `J_HK = J' * 217.2768649129496`; the 203-nit reference white is
 `J' = 0.4602422813863053`. Decoded display-linear XYZ value 1.0 represents that
-203-nit diffuse white, so the shader multiplies decoded XYZ by 2.03 before
-CAT16 white adaptation and the ACES 2.0 HDR 1000-nit Rec.2020 inverse that
-produces scene-linear ACEScg.
+203-nit diffuse white, so the shader sends decoded XYZ directly through CAT16
+white adaptation and the ACES 2.0 HDR 1000-nit Rec.2020 inverse that produces
+scene-linear ACEScg.
 
 Out-of-range or non-finite resources fail closed with the shader's diagnostic
 colors. A valid zero `J'` remains black.

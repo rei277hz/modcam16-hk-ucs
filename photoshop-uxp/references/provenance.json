@@ -1,0 +1,65 @@
+{
+  "snapshot": "Current working tree at implementation start; these paths are provenance only, never build inputs.",
+  "files": [
+    {
+      "source": "src/wasm/color_core/src/aces_output.rs",
+      "sha256": "ab2212af9fea74309a5acf1a6a69b93d0335d4b46a3bf23f6483332e2e02a2b1",
+      "destination": "color/aces_output.rs"
+    },
+    {
+      "source": "src/wasm/color_core/src/aces_output_p3_tables.rs",
+      "sha256": "a6f447d5d639de847e83a517adcb8b2502b7129bf19f30269ee8ca7b3133c5e7",
+      "destination": "color/aces_output_p3_tables.rs"
+    },
+    {
+      "source": "src/wasm/color_core/src/aces_output_tables.rs",
+      "sha256": "547a86a7e275c7afbfafb2086e285bc09e44fb7047cdabcc71a541a3268c21ff",
+      "destination": "color/aces_output_tables.rs"
+    },
+    {
+      "source": "src/wasm/color_core/src/lib.rs",
+      "sha256": "7e6089b390f79b82b3a507c036617a7f9543c2979a2e78b9a3f685cd5d6f5512",
+      "destination": "color/lib.rs"
+    },
+    {
+      "source": "src/wasm/color_core/src/picker.rs",
+      "sha256": "a17d37f573fe6bfdc8b94a05695a33bf63acfa5d7c939e9f5600464a1f71dacd",
+      "destination": "color/picker.rs"
+    },
+    {
+      "source": "src/preview_png.ts",
+      "sha256": "c4ee0ea81d3e6fc72076b9b1d545712f26ca7f4e23a11fe7cda609d7296c2a2e",
+      "destination": "web/png.ts"
+    },
+    {
+      "source": "src/slice_webgpu.ts",
+      "sha256": "43f8830de63389275543af003c2cfd2f326267756056695a8edfb1dade88bc6a",
+      "destination": "web/webgpu.ts"
+    },
+    {
+      "source": "src/picker_math.ts",
+      "sha256": "12e04832311b10a7b675a55f3bb4fb63baf59865529223fc1c8e9c61359c422c",
+      "destination": "web/math.ts"
+    },
+    {
+      "source": "tests/picker_reference.py",
+      "sha256": "96974ad552814fb4de7c96a1c9be0e92607dc264ca2f879c13b75bbd15945cfc",
+      "destination": "references/picker_reference.py"
+    },
+    {
+      "source": "tests/reference/cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio",
+      "sha256": "9e3ec773a7fbc0bb6666e428dedd8ccec4f59b8b6d40506c825cc7a8c02ff2ff",
+      "destination": "references/config.ocio"
+    },
+    {
+      "source": "tests/png_reader.mjs",
+      "sha256": "ea3a0e3204ab1251dec74de30f8977531b468dc89541993055729fd5c60b72e4",
+      "destination": "tests/png_reader.mjs"
+    },
+    {
+      "source": "tests/ocio_oracle.py",
+      "destination": "references/ocio_oracle.py",
+      "sha256": "84836d70dc038df06fcaf0a1bd0ab73122e6e51f879496a5aa7700b617c11fd8"
+    }
+  ]
+}

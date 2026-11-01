@@ -1,0 +1,7 @@
+buck-out/
+node_modules/
+.tools/
+.buckconfig.local
+__pycache__/
+*.pyc
+host-results/

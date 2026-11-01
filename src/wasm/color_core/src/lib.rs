@@ -512,7 +512,6 @@ fn unit_cube_valid(value: [f64; 3]) -> bool {
 // modCAM16-HK view shader and intentionally live beside the f64 reference
 // implementation so browser controls and shader-authored Rec.2020 values agree.
 const J_HK_PEAK: f64 = 183.7488220212894;
-const NORMALIZED_HDR203_DIFFUSE_WHITE_SCALE: f64 = 2.03;
 // Calculated to contain the Rec.2020 pure-blue endpoint
 // s_max=203.64174424420062 while retaining smooth logarithmic interpolation.
 const FITTED_RADIUS_K: f64 = 5.977038579617132;
@@ -523,11 +522,8 @@ fn normalized_j_scale(_profile: u32) -> f64 {
 }
 
 fn normalized_xyz_scale(profile: u32) -> f64 {
-    if profile == 0 || profile == 2 {
-        NORMALIZED_HDR203_DIFFUSE_WHITE_SCALE
-    } else {
-        1.0
-    }
+    let _ = profile;
+    1.0
 }
 
 fn normalized_model(_profile: u32) -> Model {
@@ -1168,29 +1164,11 @@ fn lab_d50_to_xyz(lab: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-const COLORCHECKER_RICD_FLARE: f64 = 0.005;
-const COLORCHECKER_RICD_SCALE: f64 = 0.18 / (0.18 + COLORCHECKER_RICD_FLARE);
-const COLORCHECKER_HDR_DIFFUSE_WHITE: f64 = 2.03;
-
-fn colorchecker_ricd_perfect_diffuser() -> f64 {
-    COLORCHECKER_RICD_SCALE * (1.0 + COLORCHECKER_RICD_FLARE)
-}
-
-/// Scene-linear exposure that places the RICD perfect diffuser at 203 nits
-/// through the fixed ACES 2.0 HDR 1000-nit Rec.2020 output transform.
-fn colorchecker_scene_gain() -> f64 {
-    let target_xyz = mat(&REC2020_TO_XYZ, [COLORCHECKER_HDR_DIFFUSE_WHITE; 3]);
-    let target_scene = aces_output::inverse_from_xyz_d65(0, target_xyz);
-    let target_neutral = (target_scene[0] + target_scene[1] + target_scene[2]) / 3.0;
-    target_neutral / colorchecker_ricd_perfect_diffuser()
-}
-
-/// Convert one official post-November-2014 Lab/D50 patch to its ACEScg RICD
-/// scene target and apply the independent 203-nit perfect-diffuser placement.
+/// Convert one official post-November-2014 Lab/D50 patch directly to its
+/// ACEScg scene-reference target. ColorChecker references intentionally do not
+/// receive the RICD flare/scale or a separate HDR placement gain.
 fn colorchecker_scene_target(lab_d50: [f64; 3]) -> [f64; 3] {
-    let acescg = mat(&XYZ_D50_TO_ACESCG, lab_d50_to_xyz(lab_d50));
-    let gain = colorchecker_scene_gain();
-    acescg.map(|value| COLORCHECKER_RICD_SCALE * (value + COLORCHECKER_RICD_FLARE) * gain)
+    mat(&XYZ_D50_TO_ACESCG, lab_d50_to_xyz(lab_d50))
 }
 
 /// Solve a profile-local neutral coordinate for a target J_HK.
@@ -2778,20 +2756,10 @@ mod tests {
     }
 
     #[test]
-    fn colorchecker_ricd_scene_gain_places_perfect_diffuser_at_203_nits() {
-        let perfect = colorchecker_ricd_perfect_diffuser();
-        assert!((perfect - 0.9778378378378378).abs() < 2.0e-15);
-
-        let gain = colorchecker_scene_gain();
-        assert!((gain - 2.0138005459530484).abs() < 3.0e-6, "gain={gain}");
-        let output_xyz = aces_output::forward(0, [perfect * gain; 3]);
-        let output_rec2020 = mat(&XYZ_TO_REC2020, output_xyz);
-        for channel in output_rec2020 {
-            assert!(
-                (channel - COLORCHECKER_HDR_DIFFUSE_WHITE).abs() < 3.0e-6,
-                "display channel={channel}"
-            );
-        }
+    fn colorchecker_target_is_direct_acescg_without_ricd_or_hdr_gain() {
+        let lab = COLORCHECKER_LAB_D50[0];
+        let direct = mat(&XYZ_D50_TO_ACESCG, lab_d50_to_xyz(lab));
+        assert_eq!(colorchecker_scene_target(lab), direct);
     }
 
     #[test]
@@ -3049,14 +3017,13 @@ mod tests {
     }
 
     #[test]
-    fn normalized_hdr_xyz_scale_matches_shader_reference_scale() {
+    fn normalized_hdr_xyz_scale_matches_sdr_reference_scale() {
         let code = [0.3, 0.54, 0.47];
         let sdr = normalized_sample(1, code);
         let hdr = normalized_sample(2, code);
         for channel in 0..3 {
             assert!(
-                (hdr.xyz[channel] - NORMALIZED_HDR203_DIFFUSE_WHITE_SCALE * sdr.xyz[channel]).abs()
-                    < 1.0e-12
+                (hdr.xyz[channel] - sdr.xyz[channel]).abs() < 1.0e-12
             );
         }
     }

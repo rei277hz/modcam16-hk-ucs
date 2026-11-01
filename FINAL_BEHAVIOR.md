@@ -8,12 +8,11 @@ available only when every Rec.2020 channel is finite and within the configured
 Rec.2020 authoring range; when limited mode is active it must also be inside the linear
 P3 cube. Unavailable slice pixels are black.
 
-The authored Rec.2020 value is converted to XYZ-D65 and multiplied by the
-fixed 2.03 factor that maps the picker’s 203-nit diffuse-white convention to
-the ACES output transform’s 100-nit display-linear scale. The result enters
-the canonical inverse ACES 2.0 HDR 1000 nits Rec.2020 path and produces the
-canonical ACEScg scene-linear value. The selected presentation view then
-converts that ACEScg value to the displayed RGB/PNG representation.
+The authored Rec.2020 value is converted to XYZ-D65 where code value `(1, 1,
+1)` is the 203-nit reference white. That value enters the canonical inverse
+ACES 2.0 HDR 1000 nits Rec.2020 path directly and produces the canonical
+ACEScg scene-linear value. The selected presentation view then converts that
+ACEScg value to the app's display-linear RGB representation.
 
 ## ACES color-space boundaries
 
@@ -112,24 +111,26 @@ XYZ-PCS values are adapted from D50 to D65 with Bradford. Generated SDR ICC
 profiles likewise use Bradford for their D65-to-D50 colorants and `chad` tag.
 ACEScg/AP0 choices are available only for EXR scene-reference input.
 
-For this application, DNG camera white uses the fixed 203-nit workflow:
+For this application, DNG camera white uses the fixed 1.0 reference-white
+workflow:
 
 ```text
-prepared XYZ-D65 × 2.03
+prepared XYZ-D65
 → inverse_from_xyz_d65(HDR 1000 nits Rec.2020)
 → ACEScg
 ```
 
 The image, loupe, and sample analysis use this same path. The image option
-`Treat display-linear 1.0 as HDR 203 nits diffuse white` is checked and disabled
-for DNG, with helper text explaining that the 2.03 multiplier is mandatory.
+`Image reference white is encoded as linear 2.03` is unchecked and disabled for
+DNG, with helper text explaining that RAW/DNG uses linear 1.0 as reference
+white.
 
 ## Scene-reference EXR
 
 An EXR identified or manually overridden as ACEScg is decoded as scene ACEScg;
-an ACES2065-1 EXR is decoded as scene AP0. Both bypass inverse ACES and the
-203-nit multiplier. They are presented through the selected forward view and
-sampled directly as scene data.
+an ACES2065-1 EXR is decoded as scene AP0. Both bypass inverse ACES and any
+reference-white scaling. They are presented through the selected forward view
+and sampled directly as scene data.
 
 ## Presentation and encoding
 
@@ -141,7 +142,9 @@ The selected view determines the displayed encoding:
 - HDR Rec.2020: 16-bit PQ RGB PNG with Rec.2020-D65 metadata.
 
 The gamut slice, ColorChecker layer, picked-color preview, image preview, and
-loupe use the selected view’s after-transform display-linear values.
+loupe use the selected view’s after-transform display-linear values. For HDR
+PNG encoding only, those values are multiplied by 2.03 before PQ encoding so
+linear `(1, 1, 1)` is stored with the common 203-nit viewer convention.
 
 ## ColorChecker references
 
@@ -159,22 +162,10 @@ official Lab D50
 → XYZ D50
 → CAT02 D50→ACES white (x=0.32168, y=0.33767)
 → ACEScg/AP1
-→ RICD flare and scale
-→ calculated scene-side 203-nit placement gain
 ```
 
-The RICD operation is applied once in scene-linear ACEScg:
-
-```text
-RICD target = (0.18 / 0.185) × (ACEScg + 0.005)
-```
-
-The 203-nit placement gain is calculated from the canonical ACES 2.0 HDR
-1000-nit Rec.2020 inverse. It maps the RICD perfect-diffuser scene target to the
-scene value whose forward output is display-linear Rec.2020 `(2.03, 2.03,
-2.03)`, where 1.0 represents 100 nits. The gain is applied before the selected
-forward view transform. ColorChecker references never use a post-forward RGB
-multiplier and do not pass through an intermediate D65 adaptation before being
+ColorChecker references never use RICD scaling, inverse ACES view transforms,
+post-forward RGB multipliers, or an intermediate D65 adaptation before being
 adapted to the ACES white.
 
 The interactive gamut-slice surface is the **Color trackpad**. The vertical

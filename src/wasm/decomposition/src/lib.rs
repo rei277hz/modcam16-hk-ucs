@@ -2486,18 +2486,33 @@ pub fn inspect(data: Vec<u8>, format: String) -> Result<JsValue, JsValue> {
 // Browser image-locator bridges.  These wrappers keep the decomposition
 // package's generated JavaScript self-contained while the numerical picker
 // implementation remains owned by the color-core crate.
+#[wasm_bindgen(js_name = image_picker_analyze_xyz_d65_with_reference_white_encoded_as_linear_203)]
+pub fn picker_analyze_xyz_d65_with_reference_white_encoded_as_linear_203(
+    x: f64,
+    y: f64,
+    z: f64,
+    reference_white_encoded_as_linear_203: bool,
+) -> Vec<f64> {
+    modcam16_color_core::picker::picker_analyze_xyz_d65_with_reference_white_encoded_as_linear_203(
+        x,
+        y,
+        z,
+        reference_white_encoded_as_linear_203,
+    )
+}
+
 #[wasm_bindgen(js_name = image_picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white)]
 pub fn picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
     x: f64,
     y: f64,
     z: f64,
-    treat_display_linear_one_as_hdr203_white: bool,
+    reference_white_encoded_as_linear_203: bool,
 ) -> Vec<f64> {
-    modcam16_color_core::picker::picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(
+    picker_analyze_xyz_d65_with_reference_white_encoded_as_linear_203(
         x,
         y,
         z,
-        treat_display_linear_one_as_hdr203_white,
+        reference_white_encoded_as_linear_203,
     )
 }
 
@@ -2515,12 +2530,12 @@ pub fn picker_code_from_acescg(red: f64, green: f64, blue: f64) -> Vec<f64> {
 pub fn picker_display_rgb_xyz_d65_batch(
     pixels: &[f32],
     view: u32,
-    treat_display_linear_one_as_hdr203_white: bool,
+    reference_white_encoded_as_linear_203: bool,
 ) -> Vec<f32> {
     modcam16_color_core::picker::picker_display_rgb_xyz_d65_batch(
         pixels,
         view,
-        treat_display_linear_one_as_hdr203_white,
+        reference_white_encoded_as_linear_203,
     )
 }
 

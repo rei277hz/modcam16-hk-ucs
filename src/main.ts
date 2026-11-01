@@ -147,8 +147,8 @@ const imageStatus = $("#image-status") as HTMLElement;
 const imageTransformBanner = $("#image-transform-banner") as HTMLElement;
 const imageGamutSelect = $("#image-gamut") as HTMLSelectElement;
 const imageTransferSelect = $("#image-transfer") as HTMLSelectElement;
-const imageHdr203WhiteControl = $("#image-treat-display-linear-one-as-hdr203-white") as HTMLInputElement;
-const imageHdr203WhiteHelp = $("#image-units-help") as HTMLElement;
+const imageReferenceWhite203Control = $("#image-reference-white-encoded-as-linear-203") as HTMLInputElement;
+const imageReferenceWhiteHelp = $("#image-units-help") as HTMLElement;
 const imageUnitsField = $(".image-units-field") as HTMLElement;
 const imageGamutField = $("#image-gamut-field") as HTMLElement;
 const imageTransferField = $("#image-transfer-field") as HTMLElement;
@@ -277,16 +277,16 @@ type ImageWorkerRequest = {
   gamut?: string | null;
   transfer?: string | null;
   view?: ViewId;
-  treatDisplayLinearOneAsHdr203White?: boolean;
+  referenceWhiteEncodedAsLinear203?: boolean;
   x?: number;
   y?: number;
   radius?: number;
 };
 type ImageWorkerMessage =
   | { kind: "inspect"; id: number; generation: number; summary: any }
-  | { kind: "ready"; id: number; generation: number; width: number; height: number; previewWidth: number; previewHeight: number; summary: any; png: ArrayBuffer; view: ViewId; sourceMode: ImageSourceMode; treatDisplayLinearOneAsHdr203White: boolean; renderer: "webgpu" | "wasm" }
-  | { kind: "preview"; id: number; generation: number; appearanceToken: number; width: number; height: number; previewWidth: number; previewHeight: number; png: ArrayBuffer; view: ViewId; sourceMode: ImageSourceMode; treatDisplayLinearOneAsHdr203White: boolean; renderer: "webgpu" | "wasm" }
-  | { kind: "sample"; id: number; generation: number; token: number; x: number; y: number; minX: number; minY: number; width: number; height: number; loupe: ArrayBuffer; points: Array<{ j: number; x: number; y: number }>; mean: Code; meanAcescg: [number, number, number]; meanCode: Float64Array; rejected: number; total: number; view: ViewId; sourceMode: ImageSourceMode; treatDisplayLinearOneAsHdr203White: boolean }
+  | { kind: "ready"; id: number; generation: number; width: number; height: number; previewWidth: number; previewHeight: number; summary: any; png: ArrayBuffer; view: ViewId; sourceMode: ImageSourceMode; referenceWhiteEncodedAsLinear203: boolean; renderer: "webgpu" | "wasm" }
+  | { kind: "preview"; id: number; generation: number; appearanceToken: number; width: number; height: number; previewWidth: number; previewHeight: number; png: ArrayBuffer; view: ViewId; sourceMode: ImageSourceMode; referenceWhiteEncodedAsLinear203: boolean; renderer: "webgpu" | "wasm" }
+  | { kind: "sample"; id: number; generation: number; token: number; x: number; y: number; minX: number; minY: number; width: number; height: number; loupe: ArrayBuffer; points: Array<{ j: number; x: number; y: number }>; mean: Code; meanAcescg: [number, number, number]; meanCode: Float64Array; rejected: number; total: number; view: ViewId; sourceMode: ImageSourceMode; referenceWhiteEncodedAsLinear203: boolean }
   | { kind: "error"; id: number; generation?: number; message: string };
 const imageWorker = new Worker(new URL("./image_locator_worker.ts", import.meta.url), { type: "module" });
 let imageRequestId = 0;
@@ -296,7 +296,7 @@ let imageFormat = "";
 let imageSummary: any;
 let imagePrepared = false;
 let imageSourceMode: ImageSourceMode = "display-linear-xyz-d65";
-let treatDisplayLinearOneAsHdr203White = false;
+let referenceWhiteEncodedAsLinear203 = false;
 let imageUnitsUserChanged = false;
 let imageWidth = 0;
 let imageHeight = 0;
@@ -320,7 +320,7 @@ let imagePointerLockFallback = false;
 let imageOptionsFocusPending = false;
 let imageAppearanceToken = 0;
 let pendingImageAppearance:
-  | { token: number; view: ViewId; sourceMode: ImageSourceMode; treatDisplayLinearOneAsHdr203White: boolean; previewReady: boolean; sampleToken?: number; loupeReady: boolean }
+  | { token: number; view: ViewId; sourceMode: ImageSourceMode; referenceWhiteEncodedAsLinear203: boolean; previewReady: boolean; sampleToken?: number; loupeReady: boolean }
   | undefined;
 
 function finite(value: number, fallback = 0) {
@@ -1042,7 +1042,7 @@ function setImageTransformBusy(busy: boolean) {
 
 function finishImageAppearanceIfReady() {
   const pending = pendingImageAppearance;
-  if (pending?.view === selectedView && pending.sourceMode === imageSourceMode && pending.treatDisplayLinearOneAsHdr203White === treatDisplayLinearOneAsHdr203White &&
+  if (pending?.view === selectedView && pending.sourceMode === imageSourceMode && pending.referenceWhiteEncodedAsLinear203 === referenceWhiteEncodedAsLinear203 &&
     pending.previewReady && pending.loupeReady) setImageTransformBusy(false);
 }
 
@@ -1057,19 +1057,17 @@ function detectImageFormat(file: File): string | undefined {
   return undefined;
 }
 
-function defaultTreatDisplayLinearOneAsHdr203White(format: string, summary?: any): boolean {
+function defaultReferenceWhiteEncodedAsLinear203(format: string, summary?: any): boolean {
   const normalizedFormat = String(summary?.format ?? format).toLowerCase();
-  // Display-linear EXR commonly treats 1.0 as the working diffuse white, while
-  // DNG, gain-map output, PQ, and HLG preparation retain 100-nit units where
-  // 2.03 represents 203 nits. Scene-reference ACES EXR bypasses this default
-  // and disables the option. Other SDR images default to lifting encoded white
-  // to HDR diffuse white. The checkbox value is never inverted in transit.
-  if (normalizedFormat === "exr") return true;
-  if (normalizedFormat === "dng") return true;
-  if (summary?.gainmap_confirmed) return false;
+  // Checked means the prepared display-linear source stores 203-nit reference
+  // white as 2.03, so it must be divided back to the application's 1.0-white
+  // boundary before inverse ACES. Scene-reference ACES EXR bypasses this flag.
+  if (normalizedFormat === "exr") return false;
+  if (normalizedFormat === "dng") return false;
+  if (summary?.gainmap_confirmed) return true;
   const transfer = String(summary?.transfer ?? "").toLowerCase();
-  if (transfer.includes("pq") || transfer.includes("hlg")) return false;
-  return true;
+  if (transfer.includes("pq") || transfer.includes("hlg")) return true;
+  return false;
 }
 
 function requestedImageSourceMode(): ImageSourceMode {
@@ -1087,27 +1085,27 @@ function requestedImageSourceMode(): ImageSourceMode {
 function updateImageUnitsHelp() {
   const dng = String(imageSummary?.format ?? imageFormat).toLowerCase() === "dng";
   const sceneReference = requestedImageSourceMode() === "scene-reference-aces";
-  imageHdr203WhiteControl.disabled = sceneReference || dng;
+  imageReferenceWhite203Control.disabled = sceneReference || dng;
   imageUnitsField.setAttribute("aria-disabled", String(sceneReference || dng));
   if (dng) {
-    treatDisplayLinearOneAsHdr203White = true;
-    imageHdr203WhiteControl.checked = true;
-    imageHdr203WhiteHelp.textContent = "RAW/DNG camera white uses the fixed 203-nit workflow. Multiply by 2.03 before the inverse view transform.";
+    referenceWhiteEncodedAsLinear203 = false;
+    imageReferenceWhite203Control.checked = false;
+    imageReferenceWhiteHelp.textContent = "RAW/DNG uses linear 1.0 as reference white.";
     return;
   }
   if (sceneReference) {
-    imageHdr203WhiteHelp.textContent = "Scene-reference ACES data goes directly through the selected view transform; no multiplier or inverse view transform is applied.";
+    imageReferenceWhiteHelp.textContent = "Scene-reference ACES data goes directly through the selected view transform; no reference-white scaling or inverse view transform is applied.";
     return;
   }
-  imageHdr203WhiteHelp.textContent = imageHdr203WhiteControl.checked
-    ? "Multiply by 2.03 before the inverse view transform."
-    : "No multiplier will be applied.";
+  imageReferenceWhiteHelp.textContent = imageReferenceWhite203Control.checked
+    ? "Divide by 2.03 before the inverse view transform."
+    : "Use linear 1.0 as reference white.";
 }
 
 function syncImageUnitsDefault() {
   if (String(imageSummary?.format ?? imageFormat).toLowerCase() === "dng") {
-    treatDisplayLinearOneAsHdr203White = true;
-    imageHdr203WhiteControl.checked = true;
+    referenceWhiteEncodedAsLinear203 = false;
+    imageReferenceWhite203Control.checked = false;
     updateImageUnitsHelp();
     return;
   }
@@ -1122,11 +1120,11 @@ function syncImageUnitsDefault() {
   const selectedTransfer = imageGamutSelect.value === "embedded"
     ? imageSummary?.transfer
     : imageTransferSelect.value;
-  treatDisplayLinearOneAsHdr203White = defaultTreatDisplayLinearOneAsHdr203White(
+  referenceWhiteEncodedAsLinear203 = defaultReferenceWhiteEncodedAsLinear203(
     imageFormat,
     { ...imageSummary, transfer: selectedTransfer },
   );
-  imageHdr203WhiteControl.checked = treatDisplayLinearOneAsHdr203White;
+  imageReferenceWhite203Control.checked = referenceWhiteEncodedAsLinear203;
   updateImageUnitsHelp();
 }
 
@@ -1210,7 +1208,7 @@ function imageRequestPrepare() {
     gamut: embedded || String(imageSummary?.format ?? "").toLowerCase() === "dng" ? null : imageGamutSelect.value,
     transfer: embedded || String(imageSummary?.format ?? "").toLowerCase() === "dng" ? null : imageTransferSelect.value,
     view: selectedView,
-    treatDisplayLinearOneAsHdr203White,
+    referenceWhiteEncodedAsLinear203,
   } satisfies ImageWorkerRequest);
 }
 
@@ -1326,19 +1324,19 @@ function requestImageSample() {
   if (!imagePrepared || !imageFile) return;
   const token = ++imageSampleToken;
   latestImageSampleToken = token;
-  if (pendingImageAppearance?.view === selectedView && pendingImageAppearance.sourceMode === imageSourceMode && pendingImageAppearance.treatDisplayLinearOneAsHdr203White === treatDisplayLinearOneAsHdr203White) {
+  if (pendingImageAppearance?.view === selectedView && pendingImageAppearance.sourceMode === imageSourceMode && pendingImageAppearance.referenceWhiteEncodedAsLinear203 === referenceWhiteEncodedAsLinear203) {
     pendingImageAppearance.sampleToken = token;
     pendingImageAppearance.loupeReady = false;
   }
-  imageWorker.postMessage({ kind: "sample", id: imageRequestId, generation: imageGeneration, token, format: imageFormat, x: imagePointerX, y: imagePointerY, radius: 3, view: selectedView, treatDisplayLinearOneAsHdr203White } satisfies ImageWorkerRequest);
+  imageWorker.postMessage({ kind: "sample", id: imageRequestId, generation: imageGeneration, token, format: imageFormat, x: imagePointerX, y: imagePointerY, radius: 3, view: selectedView, referenceWhiteEncodedAsLinear203 } satisfies ImageWorkerRequest);
 }
 
 function requestImagePreview() {
   if (!imagePrepared || !imageFile) return;
   const appearanceToken = ++imageAppearanceToken;
-  pendingImageAppearance = { token: appearanceToken, view: selectedView, sourceMode: imageSourceMode, treatDisplayLinearOneAsHdr203White, previewReady: false, loupeReady: false };
+  pendingImageAppearance = { token: appearanceToken, view: selectedView, sourceMode: imageSourceMode, referenceWhiteEncodedAsLinear203, previewReady: false, loupeReady: false };
   setImageTransformBusy(true);
-  imageWorker.postMessage({ kind: "preview", id: imageRequestId, generation: imageGeneration, appearanceToken, format: imageFormat, view: selectedView, treatDisplayLinearOneAsHdr203White } satisfies ImageWorkerRequest);
+  imageWorker.postMessage({ kind: "preview", id: imageRequestId, generation: imageGeneration, appearanceToken, format: imageFormat, view: selectedView, referenceWhiteEncodedAsLinear203 } satisfies ImageWorkerRequest);
 }
 
 function setImagePointer(x: number, y: number, sample = true) {
@@ -1449,7 +1447,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       URL.revokeObjectURL(url);
       return;
     }
-    const presentationMismatch = response.view !== selectedView || response.sourceMode !== requestedImageSourceMode() || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White;
+    const presentationMismatch = response.view !== selectedView || response.sourceMode !== requestedImageSourceMode() || response.referenceWhiteEncodedAsLinear203 !== referenceWhiteEncodedAsLinear203;
     if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
     imagePreviewUrl = url;
     imagePreview.src = imagePreviewUrl;
@@ -1475,7 +1473,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
     return;
   }
   if (response.kind === "preview") {
-    if (!imagePrepared || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.sourceMode !== imageSourceMode || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White) return;
+    if (!imagePrepared || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.sourceMode !== imageSourceMode || response.referenceWhiteEncodedAsLinear203 !== referenceWhiteEncodedAsLinear203) return;
     const generation = imageGeneration;
     const requestId = imageRequestId;
     const url = URL.createObjectURL(new Blob([response.png], { type: "image/png" }));
@@ -1489,7 +1487,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       imageSetStatus("Display transform could not be decoded; previous image retained.", true);
       return;
     }
-    if (generation !== imageGeneration || requestId !== imageRequestId || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.sourceMode !== imageSourceMode || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White) {
+    if (generation !== imageGeneration || requestId !== imageRequestId || response.appearanceToken !== imageAppearanceToken || response.view !== selectedView || response.sourceMode !== imageSourceMode || response.referenceWhiteEncodedAsLinear203 !== referenceWhiteEncodedAsLinear203) {
       URL.revokeObjectURL(url);
       return;
     }
@@ -1498,7 +1496,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
     imagePreview.src = imagePreviewUrl;
     imagePreview.dataset.renderer = response.renderer;
     imagePreview.alt = `Loaded ${imageFormat.toUpperCase()} image (${imageWidth} × ${imageHeight})`;
-    if (pendingImageAppearance?.token === response.appearanceToken && pendingImageAppearance.view === response.view && pendingImageAppearance.sourceMode === response.sourceMode && pendingImageAppearance.treatDisplayLinearOneAsHdr203White === response.treatDisplayLinearOneAsHdr203White) {
+    if (pendingImageAppearance?.token === response.appearanceToken && pendingImageAppearance.view === response.view && pendingImageAppearance.sourceMode === response.sourceMode && pendingImageAppearance.referenceWhiteEncodedAsLinear203 === response.referenceWhiteEncodedAsLinear203) {
       pendingImageAppearance.previewReady = true;
       finishImageAppearanceIfReady();
     }
@@ -1506,7 +1504,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
   }
   if (response.kind === "sample") {
     if (response.token !== latestImageSampleToken) return;
-    if (response.view !== selectedView || response.sourceMode !== imageSourceMode || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White) return;
+    if (response.view !== selectedView || response.sourceMode !== imageSourceMode || response.referenceWhiteEncodedAsLinear203 !== referenceWhiteEncodedAsLinear203) return;
     imageViewport.dataset.sampleX = String(response.x);
     imageViewport.dataset.sampleY = String(response.y);
     imageViewport.dataset.sampleCount = String(response.points.length);
@@ -1523,7 +1521,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       } catch {
         URL.revokeObjectURL(url);
         if (pendingImageAppearance?.sampleToken === response.token &&
-          pendingImageAppearance.view === response.view && pendingImageAppearance.sourceMode === response.sourceMode && pendingImageAppearance.treatDisplayLinearOneAsHdr203White === response.treatDisplayLinearOneAsHdr203White) {
+          pendingImageAppearance.view === response.view && pendingImageAppearance.sourceMode === response.sourceMode && pendingImageAppearance.referenceWhiteEncodedAsLinear203 === response.referenceWhiteEncodedAsLinear203) {
           pendingImageAppearance.loupeReady = true;
           finishImageAppearanceIfReady();
         }
@@ -1533,7 +1531,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       // active blob URL alive until the next replacement; revoking it
       // immediately after decode can make Safari discard the HDR resource
       // while it is still being presented.
-      if (response.id !== imageRequestId || response.generation !== imageGeneration || response.token !== latestImageSampleToken || response.view !== selectedView || response.sourceMode !== imageSourceMode || response.treatDisplayLinearOneAsHdr203White !== treatDisplayLinearOneAsHdr203White || !imagePrepared) {
+      if (response.id !== imageRequestId || response.generation !== imageGeneration || response.token !== latestImageSampleToken || response.view !== selectedView || response.sourceMode !== imageSourceMode || response.referenceWhiteEncodedAsLinear203 !== referenceWhiteEncodedAsLinear203 || !imagePrepared) {
         URL.revokeObjectURL(url);
         return;
       }
@@ -1556,7 +1554,7 @@ imageWorker.onmessage = async (event: MessageEvent<ImageWorkerMessage>) => {
       drawIndicators();
       drawImageOverlay();
       if (pendingImageAppearance?.sampleToken === response.token &&
-        pendingImageAppearance.view === response.view && pendingImageAppearance.sourceMode === response.sourceMode && pendingImageAppearance.treatDisplayLinearOneAsHdr203White === response.treatDisplayLinearOneAsHdr203White) {
+        pendingImageAppearance.view === response.view && pendingImageAppearance.sourceMode === response.sourceMode && pendingImageAppearance.referenceWhiteEncodedAsLinear203 === response.referenceWhiteEncodedAsLinear203) {
         pendingImageAppearance.loupeReady = true;
         finishImageAppearanceIfReady();
       }
@@ -1617,8 +1615,8 @@ imageFileInput.addEventListener("change", async () => {
   drawIndicators();
   imageGamutSelect.value = "embedded"; imageTransferSelect.value = "sRGB";
   imageUnitsUserChanged = false;
-  treatDisplayLinearOneAsHdr203White = defaultTreatDisplayLinearOneAsHdr203White(format);
-  imageHdr203WhiteControl.checked = treatDisplayLinearOneAsHdr203White;
+  referenceWhiteEncodedAsLinear203 = defaultReferenceWhiteEncodedAsLinear203(format);
+  imageReferenceWhite203Control.checked = referenceWhiteEncodedAsLinear203;
   updateImageUnitsHelp();
   imageGamutField.hidden = true;
   imageTransferField.hidden = true;
@@ -1630,9 +1628,9 @@ imageFileInput.addEventListener("change", async () => {
 });
 imageGamutSelect.addEventListener("change", () => { imageSetControlVisibility(imageSummary); updateImageOptionsWarning(); syncImageUnitsDefault(); if (imageInterpretationReady()) imageRequestPrepare(); });
 imageTransferSelect.addEventListener("change", () => { updateImageOptionsWarning(); syncImageUnitsDefault(); if (imageInterpretationReady()) imageRequestPrepare(); });
-imageHdr203WhiteControl.addEventListener("change", () => {
+imageReferenceWhite203Control.addEventListener("change", () => {
   imageUnitsUserChanged = true;
-  treatDisplayLinearOneAsHdr203White = imageHdr203WhiteControl.checked;
+  referenceWhiteEncodedAsLinear203 = imageReferenceWhite203Control.checked;
   updateImageUnitsHelp();
   if (imagePrepared) {
     requestImagePreview();

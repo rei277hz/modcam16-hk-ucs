@@ -1,0 +1,72 @@
+{
+  "manifestVersion": 5,
+  "id": "com.modcam16.hdr-picker",
+  "name": "modCAM16 HDR Picker",
+  "version": "0.1.7",
+  "main": "panel.html",
+  "host": {
+    "app": "PS",
+    "minVersion": "27.0.0",
+    "data": {
+      "apiVersion": 2
+    }
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "picker",
+      "label": {
+        "default": "modCAM16 HDR Picker"
+      },
+      "preferredDockedSize": {
+        "width": 340,
+        "height": 360
+      },
+      "preferredFloatingSize": {
+        "width": 400,
+        "height": 650
+      },
+      "icons": [
+        {
+          "width": 48,
+          "height": 48,
+          "path": "icons/icon.png",
+          "scale": [
+            1,
+            2
+          ],
+          "theme": [
+            "all"
+          ]
+        }
+      ],
+      "maximumSize": {
+        "width": 10000,
+        "height": 10000
+      }
+    }
+  ],
+  "requiredPermissions": {
+    "webview": {
+      "allow": "yes",
+      "domains": [],
+      "allowLocalRendering": "yes",
+      "enableMessageBridge": "localOnly"
+    },
+    "localFileSystem": "request"
+  },
+  "icons": [
+    {
+      "width": 48,
+      "height": 48,
+      "path": "icons/icon.png",
+      "scale": [
+        1,
+        2
+      ],
+      "theme": [
+        "all"
+      ]
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import init, {
   inspect,
   new_bounded_display_preview,
-  image_picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white,
+  image_picker_analyze_xyz_d65_with_reference_white_encoded_as_linear_203,
   image_picker_analyze_scene_ap0,
   image_picker_code_from_acescg,
   image_picker_display_rgb_xyz_d65_batch,
@@ -28,7 +28,7 @@ type ImageRequest = {
   token?: number;
   appearanceToken?: number;
   view?: ViewId;
-  treatDisplayLinearOneAsHdr203White?: boolean;
+  referenceWhiteEncodedAsLinear203?: boolean;
 };
 type TransformRenderer = "webgpu" | "wasm";
 
@@ -94,15 +94,15 @@ function ensureFallbackWorkers(): FallbackWorker[] {
   return workers;
 }
 
-function wasmDisplayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: ImageSourceMode, treatDisplayLinearOneAsHdr203White: boolean): Float32Array {
+function wasmDisplayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: ImageSourceMode, referenceWhiteEncodedAsLinear203: boolean): Float32Array {
   return sourceMode === "scene-reference-aces"
     ? image_picker_display_rgb_scene_ap0_batch(pixels, view)
-    : image_picker_display_rgb_xyz_d65_batch(pixels, view, treatDisplayLinearOneAsHdr203White);
+    : image_picker_display_rgb_xyz_d65_batch(pixels, view, referenceWhiteEncodedAsLinear203);
 }
 
-async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: ImageSourceMode, treatDisplayLinearOneAsHdr203White: boolean): Promise<Float32Array> {
+async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: ImageSourceMode, referenceWhiteEncodedAsLinear203: boolean): Promise<Float32Array> {
   const workers = ensureFallbackWorkers().filter(entry => !entry.failed);
-  if (!workers.length) return wasmDisplayRgbBatch(pixels, view, sourceMode, treatDisplayLinearOneAsHdr203White);
+  if (!workers.length) return wasmDisplayRgbBatch(pixels, view, sourceMode, referenceWhiteEncodedAsLinear203);
   const output = new Float32Array(pixels.length);
   const jobs: Promise<void>[] = [];
   for (let offset = 0, chunk = 0; offset < pixels.length; offset += CPU_BATCH_PIXELS * 3, chunk += 1) {
@@ -111,7 +111,7 @@ async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode
     const backup = input.slice();
     const candidates = workers.filter(entry => !entry.failed);
     if (!candidates.length) {
-      output.set(wasmDisplayRgbBatch(input, view, sourceMode, treatDisplayLinearOneAsHdr203White), offset);
+      output.set(wasmDisplayRgbBatch(input, view, sourceMode, referenceWhiteEncodedAsLinear203), offset);
       continue;
     }
     const slot = candidates[fallbackWorkerCursor++ % candidates.length];
@@ -122,15 +122,15 @@ async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode
         // locally so a transient worker failure cannot corrupt row ordering.
         const converted = result.length === input.length
           ? result
-          : wasmDisplayRgbBatch(backup, view, sourceMode, treatDisplayLinearOneAsHdr203White);
+          : wasmDisplayRgbBatch(backup, view, sourceMode, referenceWhiteEncodedAsLinear203);
         output.set(converted, offset);
         resolve();
       });
       try {
-        slot.worker.postMessage({ id, pixels: input.buffer, view, sourceMode, treatDisplayLinearOneAsHdr203White }, [input.buffer]);
+        slot.worker.postMessage({ id, pixels: input.buffer, view, sourceMode, referenceWhiteEncodedAsLinear203 }, [input.buffer]);
       } catch {
         slot.failed = true;
-        const converted = wasmDisplayRgbBatch(backup, view, sourceMode, treatDisplayLinearOneAsHdr203White);
+        const converted = wasmDisplayRgbBatch(backup, view, sourceMode, referenceWhiteEncodedAsLinear203);
         slot.pending.delete(id);
         output.set(converted, offset);
         resolve();
@@ -141,12 +141,12 @@ async function cpuDisplayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode
   return output;
 }
 
-async function displayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: ImageSourceMode, treatDisplayLinearOneAsHdr203White: boolean): Promise<Float32Array> {
+async function displayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: ImageSourceMode, referenceWhiteEncodedAsLinear203: boolean): Promise<Float32Array> {
   if (!pixels.length) return new Float32Array();
   if (!imageGpuDisabled && imageGpu.available) {
     try {
       imageGpuParameters ??= picker_gpu_parameters();
-      return await imageGpu.renderImage(imageGpuParameters, viewIndex(view), sourceMode, treatDisplayLinearOneAsHdr203White, pixels);
+      return await imageGpu.renderImage(imageGpuParameters, viewIndex(view), sourceMode, referenceWhiteEncodedAsLinear203, pixels);
     } catch {
       imageGpuDisabled = true;
     }
@@ -154,9 +154,9 @@ async function displayRgbBatch(pixels: Float32Array, view: ViewId, sourceMode: I
   // Keep the fallback bounded and parallel. The WASM implementation is the
   // numerical reference when WebGPU is absent or fails validation.
   try {
-    return await cpuDisplayRgbBatch(pixels, view, sourceMode, treatDisplayLinearOneAsHdr203White);
+    return await cpuDisplayRgbBatch(pixels, view, sourceMode, referenceWhiteEncodedAsLinear203);
   } catch {
-    return wasmDisplayRgbBatch(pixels, view, sourceMode, treatDisplayLinearOneAsHdr203White);
+    return wasmDisplayRgbBatch(pixels, view, sourceMode, referenceWhiteEncodedAsLinear203);
   }
 }
 
@@ -328,7 +328,7 @@ function summaryForHeif(decoded: Awaited<ReturnType<typeof decodeHeif>>, format:
 async function makePreview(
   prepared: Prepared,
   view: ViewId,
-  treatDisplayLinearOneAsHdr203White: boolean,
+  referenceWhiteEncodedAsLinear203: boolean,
 ): Promise<{ png: Uint8Array; width: number; height: number; renderer: TransformRenderer }> {
   if (!prepared.boundedPreview) {
     const display = new_bounded_display_preview(prepared.width, prepared.height, 1600);
@@ -357,7 +357,7 @@ async function makePreview(
   const batchLength = 131_072 * 3;
   for (let offset = 0; offset < source.pixels.length; offset += batchLength) {
     const end = Math.min(source.pixels.length, offset + batchLength);
-    const converted = await displayRgbBatch(source.pixels.subarray(offset, end), view, prepared.sourceMode, treatDisplayLinearOneAsHdr203White);
+    const converted = await displayRgbBatch(source.pixels.subarray(offset, end), view, prepared.sourceMode, referenceWhiteEncodedAsLinear203);
     rgb.set(converted, offset);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
@@ -451,19 +451,19 @@ async function prepareImage(message: ImageRequest, bytes: Uint8Array): Promise<v
     ? "scene-reference-aces"
     : "display-linear-xyz-d65";
   preparedById.set(message.id, { image, width, height, summary, sourceMode });
-  const treatDisplayLinearOneAsHdr203White = message.treatDisplayLinearOneAsHdr203White ?? false;
-  const preview = await makePreview(preparedById.get(message.id)!, message.view ?? 0, treatDisplayLinearOneAsHdr203White);
-  scope.postMessage({ kind: "ready", id: message.id, generation: message.generation ?? 0, width, height, previewWidth: preview.width, previewHeight: preview.height, summary, view: message.view ?? 0, sourceMode, treatDisplayLinearOneAsHdr203White, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
+  const referenceWhiteEncodedAsLinear203 = message.referenceWhiteEncodedAsLinear203 ?? false;
+  const preview = await makePreview(preparedById.get(message.id)!, message.view ?? 0, referenceWhiteEncodedAsLinear203);
+  scope.postMessage({ kind: "ready", id: message.id, generation: message.generation ?? 0, width, height, previewWidth: preview.width, previewHeight: preview.height, summary, view: message.view ?? 0, sourceMode, referenceWhiteEncodedAsLinear203, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
 }
 
 async function previewImage(message: ImageRequest): Promise<void> {
   const prepared = preparedById.get(message.id);
   if (!prepared) throw new Error("The image is not prepared; load it again.");
-  const treatDisplayLinearOneAsHdr203White = message.treatDisplayLinearOneAsHdr203White ?? false;
-  const preview = await makePreview(prepared, message.view ?? 0, treatDisplayLinearOneAsHdr203White);
+  const referenceWhiteEncodedAsLinear203 = message.referenceWhiteEncodedAsLinear203 ?? false;
+  const preview = await makePreview(prepared, message.view ?? 0, referenceWhiteEncodedAsLinear203);
   if ((latestGenerationById.get(message.id) ?? message.generation ?? 0) !== (message.generation ?? 0)) return;
   if ((latestAppearanceTokenById.get(message.id) ?? message.appearanceToken ?? 0) !== (message.appearanceToken ?? 0)) return;
-  scope.postMessage({ kind: "preview", id: message.id, generation: message.generation ?? 0, appearanceToken: message.appearanceToken ?? 0, width: prepared.width, height: prepared.height, previewWidth: preview.width, previewHeight: preview.height, view: message.view ?? 0, sourceMode: prepared.sourceMode, treatDisplayLinearOneAsHdr203White, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
+  scope.postMessage({ kind: "preview", id: message.id, generation: message.generation ?? 0, appearanceToken: message.appearanceToken ?? 0, width: prepared.width, height: prepared.height, previewWidth: preview.width, previewHeight: preview.height, view: message.view ?? 0, sourceMode: prepared.sourceMode, referenceWhiteEncodedAsLinear203, renderer: preview.renderer, png: preview.png.buffer }, [preview.png.buffer]);
 }
 
 async function previewLatest(): Promise<void> {
@@ -508,7 +508,7 @@ async function sampleImage(message: ImageRequest): Promise<void> {
       loupe.push(...Array.from(source));
       const converted = prepared.sourceMode === "scene-reference-aces"
         ? image_picker_analyze_scene_ap0(source[0], source[1], source[2])
-        : image_picker_analyze_xyz_d65_with_display_linear_one_as_hdr203_white(source[0], source[1], source[2], message.treatDisplayLinearOneAsHdr203White ?? false);
+        : image_picker_analyze_xyz_d65_with_reference_white_encoded_as_linear_203(source[0], source[1], source[2], message.referenceWhiteEncodedAsLinear203 ?? false);
       const inCircle = Math.hypot(x - cx, y - cy) <= radius + 1e-12;
       if (!inCircle) continue;
       if (converted[0] > 0.5) {
@@ -534,13 +534,13 @@ async function sampleImage(message: ImageRequest): Promise<void> {
   const loupeWidth = maxX - minX + 1;
   const loupeHeight = maxY - minY + 1;
   const loupeRgb = loupe.length
-    ? await displayRgbBatch(new Float32Array(loupe), message.view ?? 0, prepared.sourceMode, message.treatDisplayLinearOneAsHdr203White ?? false)
+    ? await displayRgbBatch(new Float32Array(loupe), message.view ?? 0, prepared.sourceMode, message.referenceWhiteEncodedAsLinear203 ?? false)
     : new Float32Array();
   const loupePng = loupeRgb.length
     ? encodeLinearRgbPng(message.view ?? 0, loupeWidth, loupeHeight, loupeRgb)
     : new Uint8Array();
   if ((latestSampleTokenById.get(message.id) ?? message.token ?? 0) !== (message.token ?? 0)) return;
-  scope.postMessage({ kind: "sample", id: message.id, generation: message.generation ?? 0, token: message.token ?? 0, x: cx, y: cy, minX, minY, width: loupeWidth, height: loupeHeight, loupe: loupePng.buffer, points, mean, meanAcescg, meanCode, rejected, total: points.length + rejected, view: message.view ?? 0, sourceMode: prepared.sourceMode, treatDisplayLinearOneAsHdr203White: message.treatDisplayLinearOneAsHdr203White ?? false }, [loupePng.buffer]);
+  scope.postMessage({ kind: "sample", id: message.id, generation: message.generation ?? 0, token: message.token ?? 0, x: cx, y: cy, minX, minY, width: loupeWidth, height: loupeHeight, loupe: loupePng.buffer, points, mean, meanAcescg, meanCode, rejected, total: points.length + rejected, view: message.view ?? 0, sourceMode: prepared.sourceMode, referenceWhiteEncodedAsLinear203: message.referenceWhiteEncodedAsLinear203 ?? false }, [loupePng.buffer]);
 }
 
 async function sampleLatest(): Promise<void> {

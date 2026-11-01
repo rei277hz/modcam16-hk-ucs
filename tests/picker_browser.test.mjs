@@ -1209,13 +1209,13 @@ test("ACES EXR uses direct scene-reference appearance and preserves the unit opt
   await page.locator("#image-file-input").setInputFiles({ name: "scene.exr", mimeType: "image/x-exr", buffer: exr });
   await page.waitForFunction(() => document.querySelector("#image-panel")?.dataset.sourceMode === "scene-reference-aces" && document.querySelector("#image-viewport")?.dataset.ready === "true");
   await page.locator("#image-options").click();
-  const units = page.locator("#image-treat-display-linear-one-as-hdr203-white");
+  const units = page.locator("#image-reference-white-encoded-as-linear-203");
   assert.equal(await page.locator("#image-gamut").inputValue(), "embedded");
   assert.equal(await units.isDisabled(), true);
-  assert.equal(await units.isChecked(), true);
+  assert.equal(await units.isChecked(), false);
   assert.equal(
     await page.locator("#image-units-help").textContent(),
-    "Scene-reference ACES data goes directly through the selected view transform; no multiplier or inverse view transform is applied.",
+    "Scene-reference ACES data goes directly through the selected view transform; no reference-white scaling or inverse view transform is applied.",
   );
 
   await page.locator("#image-gamut").selectOption("Rec.2020");
@@ -1398,10 +1398,10 @@ test("image locator inspects PNG metadata, prepares manual input, and samples a 
     assert.equal(encoded.depth, 16);
     assert.deepEqual([...encoded.chunks.get("cICP")], [12, 16, 0, 1]);
   }
-  const hdr203WhiteControl = "#image-treat-display-linear-one-as-hdr203-white";
-  assert.equal(await page.locator(hdr203WhiteControl).isChecked(), true);
-  assert.equal(await page.locator(".image-units-copy > span").textContent(), "Treat display-linear 1.0 as HDR 203 nits diffuse white");
-  assert.equal(await page.locator("#image-units-help").textContent(), "Multiply by 2.03 before the inverse view transform.");
+  const hdr203WhiteControl = "#image-reference-white-encoded-as-linear-203";
+  assert.equal(await page.locator(hdr203WhiteControl).isChecked(), false);
+  assert.equal(await page.locator(".image-units-copy > span").textContent(), "Image reference white is encoded as linear 2.03");
+  assert.equal(await page.locator("#image-units-help").textContent(), "Use linear 1.0 as reference white.");
   assert.ok(await page.locator(".image-units-field").evaluate(element => {
     const input = element.querySelector("input").getBoundingClientRect();
     const text = element.querySelector("span").getBoundingClientRect();
@@ -1411,7 +1411,7 @@ test("image locator inspects PNG metadata, prepares manual input, and samples a 
   const previewBeforeUnitChange = await page.locator("#image-preview").getAttribute("src");
   await page.locator("#image-options").click();
   const busyState = await page.locator(hdr203WhiteControl).evaluate(input => {
-    input.checked = false;
+    input.checked = true;
     input.dispatchEvent(new Event("change", { bubbles: true }));
     const panel = document.querySelector("#image-panel");
     const banner = document.querySelector("#image-transform-banner");
@@ -1424,7 +1424,7 @@ test("image locator inspects PNG metadata, prepares manual input, and samples a 
     };
   });
   assert.deepEqual(busyState, { busy: "true", bannerHidden: false, bannerInsideViewport: true, bannerBottom: "14px", opacity: "0.38" });
-  assert.equal(await page.locator("#image-units-help").textContent(), "No multiplier will be applied.");
+  assert.equal(await page.locator("#image-units-help").textContent(), "Divide by 2.03 before the inverse view transform.");
   await page.waitForFunction(src => document.querySelector("#image-preview")?.getAttribute("src") !== src, previewBeforeUnitChange);
   assert.equal(await page.locator("#image-panel").getAttribute("data-transforming"), "false");
   assert.equal(await page.locator("#image-transform-banner").isHidden(), true);
@@ -1455,7 +1455,7 @@ test("image locator inspects PNG metadata, prepares manual input, and samples a 
   assert.deepEqual(errors, []);
 });
 
-test("no-multiplier HDR Rec.2020-authoring slice PNG accepts bright neighborhoods", { timeout: 60_000 }, async context => {
+test("PQ HDR Rec.2020-authoring slice PNG accepts bright neighborhoods", { timeout: 60_000 }, async context => {
   const { page, errors } = await openPicker(context);
   await page.locator("#full-rec2020-toggle").click();
   assert.equal(await page.locator("#full-rec2020-toggle").textContent(), "Rec.2020");
@@ -1465,7 +1465,7 @@ test("no-multiplier HDR Rec.2020-authoring slice PNG accepts bright neighborhood
   const sliceBytes = await page.evaluate(async () => [...new Uint8Array(await (await fetch(document.querySelector("#gamut-slice").src)).arrayBuffer())]);
   await page.locator("#image-file-input").setInputFiles({ name: "hdr-slice.png", mimeType: "image/png", buffer: Buffer.from(sliceBytes) });
   await page.waitForFunction(() => document.querySelector("#image-viewport")?.dataset.ready === "true");
-  assert.equal(await page.locator("#image-treat-display-linear-one-as-hdr203-white").isChecked(), false);
+  assert.equal(await page.locator("#image-reference-white-encoded-as-linear-203").isChecked(), true);
   await page.waitForFunction(() => document.querySelector("#image-stats")?.textContent?.includes("samples available"));
   const stats = await page.locator("#image-stats").textContent();
   assert.match(stats ?? "", /29\/29 samples available/);
@@ -1497,14 +1497,14 @@ test("WebGPU image and slice appearance matches the official-table WASM path", {
     const parameters = core.picker_gpu_parameters();
     const source = new Float32Array([.18, .18, .18, .5, .1, .05, .02, .3, .7, 1.2, .8, .25]);
     const results = [];
-    for (const view of [1, 4, 2, 0]) for (const treatDisplayLinearOneAsHdr203White of [false, true]) {
+    for (const view of [1, 4, 2, 0]) for (const referenceWhiteEncodedAsLinear203 of [false, true]) {
       const slot = view === 0 ? 0 : view === 1 ? 1 : view === 2 ? 2 : 3;
-      const gpu = await renderer.renderImage(parameters, slot, "display-linear-xyz-d65", treatDisplayLinearOneAsHdr203White, source);
-      const cpu = wasm.image_picker_display_rgb_xyz_d65_batch(source, view, treatDisplayLinearOneAsHdr203White);
+      const gpu = await renderer.renderImage(parameters, slot, "display-linear-xyz-d65", referenceWhiteEncodedAsLinear203, source);
+      const cpu = wasm.image_picker_display_rgb_xyz_d65_batch(source, view, referenceWhiteEncodedAsLinear203);
       let maximum = 0;
       for (let index = 0; index < cpu.length; index += 1)
         maximum = Math.max(maximum, Math.abs(gpu[index] - cpu[index]));
-      results.push({ view, treatDisplayLinearOneAsHdr203White, maximum, length: gpu.length });
+      results.push({ view, referenceWhiteEncodedAsLinear203, maximum, length: gpu.length });
     }
     const sceneSource = new Float32Array([.18, .18, .18, .5, -.1, .05, 1.2, .8, .25]);
     const sceneResults = [];

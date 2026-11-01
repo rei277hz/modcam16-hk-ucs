@@ -1,3 +1,6 @@
+> [!WARNING]
+> The web picker will be further maintained in [rei277hz/chromaticity](https://github.com/rei277hz/chromaticity) and further developed into a Blender extension. The Substance 3D Painter shader and Photoshop UXP plugin will no longer be maintained.
+
 # modCAM16-HK Cartesian Color Picker
 
 This repository contains a local browser picker for normalized
@@ -21,20 +24,20 @@ only the slice pixel field when available; a WASM batch path provides the
 deterministic fallback. Both canvases always use 512x512 backing stores. A
 confirmed WebGPU renderer keeps the slice PNG at 512x512; only the CPU/WASM
 fallback may use a temporary 64x64 slice during J' interaction. Coordinates
-always determine Rec.2020 authoring display-linear RGB, scaled once by 2.03
-before the inverse **ACES 2.0 HDR
-1000 nits (Rec.2020)** view produces scene-linear ACEScg. The selected forward
-view supplies the slice's display-linear pixels and matching PNG encoding. A
-view change does not change coordinates, ACEScg, Background, or snapping.
+always determine Rec.2020 authoring display-linear RGB where `(1, 1, 1)` is the
+203-nit reference white. That value enters the inverse **ACES 2.0 HDR
+1000 nits (Rec.2020)** view directly to produce scene-linear ACEScg. The
+selected forward view supplies the slice's internal display-linear pixels; HDR
+PQ PNG encoding applies the viewer-convention 2.03 upscale at the final encoder
+boundary. A view change does not change coordinates, ACEScg, Background, or
+snapping.
 
 ColorChecker dots use the official post-November-2014 X-Rite ColorChecker24
 Lab/D50 reference. The complete 24-patch source file and provenance metadata
 are checked in under `references/colorchecker/`; the UI retains its established
 18 chromatic patches. Each patch is converted through direct CAT02
-D50→ACES-white adaptation into ACEScg, receives the ST 2065-1 RICD flare/scale,
-and then a calculated scene-linear gain that places the RICD perfect diffuser
-at 203 nits through the HDR Rec.2020 ACES 2.0 view. The adjustment occurs before
-the forward view transform, not as a post-forward RGB multiplier.
+D50→ACES-white adaptation into ACEScg. No RICD flare/scale, inverse ACES view
+transform, or HDR placement gain is applied to ColorChecker patches.
 
 DNG development keeps the camera-profile boundary explicit. A valid
 `ForwardMatrix` supplies the profile-defined camera→XYZ-D50 transform after
@@ -64,11 +67,12 @@ The appearance context uses a 203-nit diffuse white. J' maps linearly as
 that 203-nit neutral. The fitted-radius X/Y channels use the orientation and
 meaning defined above.
 
-Image Options contains `Treat display-linear 1.0 as HDR 203 nits diffuse
-white`. Checked means decoded display-linear `1.0` represents 203 nits and is
-multiplied by 2.03 before the inverse view transform. Unchecked means decoded
-display-linear `2.03` represents 203 nits and no multiplier is applied. The
-dynamic helper below the checkbox states the active behavior exactly.
+Image Options contains `Image reference white is encoded as linear 2.03`.
+Checked means the decoded display-linear source stores the 203-nit reference
+white as `2.03`; the image path divides by 2.03 before the inverse view
+transform. Unchecked means decoded display-linear `1.0` already represents the
+203-nit reference white. The dynamic helper below the checkbox states the
+active behavior exactly.
 
 Background is a normalized surround J' value in `0..1`, shown beside the
 label and routed through the same inverse/forward pipeline. The default is

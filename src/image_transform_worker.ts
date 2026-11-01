@@ -10,7 +10,7 @@ type TransformRequest = {
   pixels: ArrayBuffer;
   view: ViewId;
   sourceMode: ImageSourceMode;
-  treatDisplayLinearOneAsHdr203White: boolean;
+  referenceWhiteEncodedAsLinear203: boolean;
 };
 
 const scope = self as unknown as {
@@ -25,7 +25,7 @@ scope.onmessage = event => {
     const pixels = new Float32Array(request.pixels);
     const output = request.sourceMode === "scene-reference-aces"
       ? image_picker_display_rgb_scene_ap0_batch(pixels, request.view)
-      : image_picker_display_rgb_xyz_d65_batch(pixels, request.view, request.treatDisplayLinearOneAsHdr203White);
+      : image_picker_display_rgb_xyz_d65_batch(pixels, request.view, request.referenceWhiteEncodedAsLinear203);
     scope.postMessage({ id: request.id, pixels: output.buffer }, [output.buffer]);
   }).catch(error => {
     scope.postMessage({ id: request.id, error: error instanceof Error ? error.message : String(error) });

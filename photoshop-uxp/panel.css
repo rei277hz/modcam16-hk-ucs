@@ -1,0 +1,19 @@
+html, body {
+  width: 100%; height: 100%; min-width: 0; min-height: 0;
+  margin: 0; padding: 0; overflow: hidden;
+  background-color: var(--uxp-host-background-color);
+  color: var(--uxp-host-text-color);
+  border-color: var(--uxp-host-border-color);
+}
+body { position: relative; }
+/* PanelSizer follows the allocation and leaves a native strip below the
+   separate browser surface so Photoshop's resize grip can receive dragging. */
+webview {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 75%; min-width: 0; min-height: 0;
+}
+#theme-probe {
+  position: absolute; width: 0; height: 0; visibility: hidden;
+  color: var(--uxp-host-text-color-secondary);
+  background-color: var(--uxp-host-widget-hover-background-color);
+}

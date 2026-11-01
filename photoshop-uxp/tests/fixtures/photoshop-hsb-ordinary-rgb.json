@@ -1,0 +1,39 @@
+{
+  "provenance": "Redacted actual Photoshop host capture; the HSB input and native ordinary-RGB conversion result are captured, not mocked. No 32-bit pixel sample was captured; tests must label any pixel response as synthetic.",
+  "schema": 3,
+  "timestamp": "2026-10-09T11:17:16.009Z",
+  "extension": {
+    "id": "com.modcam16.hdr-picker",
+    "version": "0.1.3"
+  },
+  "photoshop": "27.11.0",
+  "document": {
+    "depth": 32,
+    "mode": {
+      "_enum": "colorSpace",
+      "_value": "RGBColor"
+    },
+    "profile": "ACEScg"
+  },
+  "foregroundDescriptor": {
+    "foregroundColor": {
+      "_obj": "HSBColorClass",
+      "hue": {
+        "_unit": "angleUnit",
+        "_value": 59.996337890625
+      },
+      "saturation": 81.0452429999237,
+      "brightness": 78.79606317235066
+    }
+  },
+  "foregroundConversion": {
+    "targetModel": 15,
+    "descriptor": {
+      "_obj": "RGBColor",
+      "blue": 38.09338521400778,
+      "grain": 200.92217898832683,
+      "red": 200.92996108949416
+    }
+  },
+  "foregroundError": "Photoshop could not convert the HSBColorClass foreground to floating-point RGB. Capture host diagnostics."
+}

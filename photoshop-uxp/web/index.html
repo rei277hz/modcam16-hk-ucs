@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src blob: data:; worker-src blob:; connect-src 'none'">
+<title>modCAM16 HDR picker</title><link rel="stylesheet" href="style.css"></head>
+<body><div id="fit-viewport"><div id="interface">
+<header><strong>modCAM16 <span class="badge">HDR</span></strong><span class="subtitle">ACEScg · 32-bit float</span></header>
+<main>
+  <div class="gamut-row"><label class="mode-label" for="gamut">Gamut</label>
+    <select id="gamut"><option value="limited">Rec.2020 (P3-D65 limited)</option><option value="full">Rec.2020</option></select></div>
+  <div class="coordinates">
+    <label>J′<input id="j" type="number" min="0" max="1" step="0.001" value="0.46"></label>
+    <label>x′<input id="x" type="number" min="0" max="1" step="0.001" value="0.5"></label>
+    <label>y′<input id="y" type="number" min="0" max="1" step="0.001" value="0.5"></label>
+  </div>
+  <div class="workspace">
+  <div class="picker-row">
+    <div class="wheel-column"><span class="axis-label">J′</span><div id="wheel" role="slider" tabindex="0" aria-label="J prime trackwheel" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0.46"><div class="wheel-ticks"></div><div id="white-tick" title="J′ reference white"></div><div id="wheel-dot"></div></div><span class="axis-label">0</span></div>
+    <div class="pad-column"><div class="pad-heading"><span>y′</span></div>
+      <div id="pad" tabindex="0" role="group" aria-label="x prime and y prime color plane. Use arrow keys to move.">
+        <img id="slice" alt="Color plane at current J prime" draggable="false">
+        <div class="crosshair horizontal"></div><div class="crosshair vertical"></div>
+        <div id="patches"></div><span class="neutral" title="Neutral"></span>
+        <div id="selection" aria-hidden="true"></div>
+      </div><div class="pad-footer"><span>x′</span></div>
+    </div>
+  </div>
+  <div class="details"><span class="mode-label">Scene-linear ACEScg</span>
+  <section class="preview-row" aria-label="Selected color"><img id="preview" alt="Selected color with neutral surround" draggable="false"><div class="color-values"><output id="rgb">—</output></div></section>
+  <span id="selection-state">Waiting for Photoshop</span>
+  <section class="view-row"><span class="mode-label">Document view</span><div id="view">HDR 1000 nits (Rec.2020)</div><div id="fallback">Default preview</div></section>
+  </div></div>
+  <div class="picker-notes"><span id="snap-label">Drag to preview · release to set</span><span id="renderer">Starting…</span></div>
+</main>
+<footer><p id="status" role="status" aria-live="polite">Connecting to Photoshop…</p><div class="footer-actions"><button id="refresh" type="button">Sync foreground</button><button id="diagnostics" type="button" title="Save host data for validation">Diagnostics</button></div></footer>
+</div></div><script src="app.js"></script></body></html>

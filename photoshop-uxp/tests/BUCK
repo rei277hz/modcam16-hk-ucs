@@ -1,0 +1,8 @@
+load("//build_defs:rules.bzl", "extension_test", "source_tree")
+source_tree(name = "files", srcs = {p: p for p in glob(["*.mjs", "fixtures/*.json", "fixtures/*.html"])}, visibility = ["PUBLIC"])
+extension_test(name = "rust", operation = "test-rust", sources = "//:sources", binary = "//:rust_tests")
+extension_test(name = "unit", operation = "test-unit", sources = "//:sources", plugin = "//:plugin")
+extension_test(name = "typecheck", operation = "typecheck", sources = "//:sources", plugin = "//:plugin")
+extension_test(name = "ocio", operation = "test-ocio", sources = "//:sources", plugin = "//:plugin")
+extension_test(name = "browser", operation = "test-browser", sources = "//:sources", plugin = "//:plugin")
+extension_test(name = "host", operation = "test-host", sources = "//:sources", plugin = "//:plugin")
